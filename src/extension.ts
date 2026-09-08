@@ -10,7 +10,8 @@
  * Peer name = session name: the host's builtin `/rename <name>` is the only
  * naming surface. A raw session name is adopted as the peer address when it
  * matches `^[\w.-]{1,24}$`; anything else keeps the default name (one
- * warning per distinct rejected name).
+ * popup warning per process — later ones log only, so model-written
+ * auto-titles don't nag on every change).
  *
  * Session discipline: NOTHING session-shaped is captured at boot or in the
  * factory closure. The freshest `{pi, ctx}` is re-read from the live getter
@@ -63,6 +64,7 @@ interface NodeState {
   claimed: Set<string>;
   wakes: Map<string, number[]>;
   inboundHop: number | undefined;
+  /** First rejected session name this process saw; doubles as the warned-once flag (undefined = never warned). */
   lastRejectedSessionName: string | undefined;
   current: { pi: ExtensionHostLike; ctx: CommandContextLike } | undefined;
   server: PeerServerHandle | undefined;
@@ -139,12 +141,13 @@ async function tick(st: NodeState): Promise<void> {
   }
   const derived = peerNameFromSession(sessionName, cwd, st.pid);
   if (derived.rejected !== undefined && derived.rejected !== st.lastRejectedSessionName) {
+    const first = st.lastRejectedSessionName === undefined;
     st.lastRejectedSessionName = derived.rejected;
-    warnOf(
-      st,
+    const text =
       `session name "${derived.rejected}" can't be a peer name (1-24 of a-z A-Z 0-9 _ . -); ` +
-        `using ${derived.name} — /rename the session to a valid name`
-    );
+      `using ${derived.name} — /rename the session to a valid name`;
+    if (first) warnOf(st, text);
+    else logOf(st, `peers: ${text}`);
   }
   const base = derived.name;
   let others: PeerRecord[];

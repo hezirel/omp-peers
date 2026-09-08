@@ -376,13 +376,14 @@ describe('peer identity: validation, collision, session-name adoption', () => {
 describe('peer name follows the host session name (tick level)', () => {
   const handlers = {};
   const noted = [];
+  const logged = [];
   let sessionName;
   let sessionId = 'sess-tick-1';
   const fakePi = {
     registerCommand: () => {},
     registerTool: () => {},
     on: (event, handler) => { handlers[event] = handler; },
-    logger: { warn: () => {}, info: () => {}, error: () => {} },
+    logger: { warn: (message) => logged.push(message), info: () => {}, error: () => {} },
     getSessionName: () => sessionName,
   };
   const fakeCtx = {
@@ -401,7 +402,7 @@ describe('peer name follows the host session name (tick level)', () => {
     throw new Error(`own beat never reached name "${expectedName}"`);
   }
 
-  it('beats under the session name; warns once per distinct rejected name', async () => {
+  it('beats under the session name; warns once per process', async () => {
     const peersExtension = (await import('../dist/extension.js')).default;
     peersExtension(fakePi);
 
@@ -424,6 +425,14 @@ describe('peer name follows the host session name (tick level)', () => {
     handlers['session_switch'](undefined, fakeCtx);
     await waitForOwnBeat(fallback);
     assert.equal(noted.length, 1, 'no repeat notify for the same rejected name');
+    sessionName = 'Add deepseek-harness retro checks';
+    sessionId = 'sess-tick-4';
+    handlers['session_switch'](undefined, fakeCtx);
+    for (let i = 0; i < 100 && !logged.some((m) => m.includes('Add deepseek-harness retro checks')); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.ok(logged.some((m) => m.includes('Add deepseek-harness retro checks')), 'second rejection logs instead of popping up');
+    assert.equal(noted.length, 1, 'no second popup for a new auto-title; later ones log only');
 
     handlers['session_shutdown']();
   });
