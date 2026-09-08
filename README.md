@@ -1,11 +1,37 @@
-# omp-peers
+<div align="center">
 
-Claude-Code-style cross-session peer awareness for [Oh My Pi](https://github.com/can1357/oh-my-pi) (omp) and pi agent instances. Every running session on the machine sees every other — live, by name, with no channels, no pairing ceremony, and no broker process.
-
+```text
+   ___  _ __ ___  _ __ ______ _ __   ___  ___ _ __ ___ 
+  / _ \| '_ ` _ \| '_ \______| '_ \ / _ \/ _ \ '__/ __|
+ | (_) | | | | | | |_) |     | |_) |  __/  __/ |  \__ \
+  \___/|_| |_| |_| .__/      | .__/ \___|\___|_|  |___/
+                 | |         | |                       
+                 |_|         |_|                       
 ```
+
+**Cross-session peer awareness for [Oh My Pi](https://github.com/can1357/oh-my-pi) and pi** — every running agent instance sees every other, live, by name. No channels, no pairing ceremony, no broker process.
+
+</div>
+
+```text
 /peers                      main-peer · omp(12776) · C:\work\api · glm-5.3-flash · idle · beat 3s ago
 /rename backend             that's it — your session name IS your peer address
 peer_send to="backend" ...  injects a real prompt into that instance's agent
+```
+
+**What an agent actually sees, every prompt** — the injected `<peers>` roster note:
+
+```text
+<peers>
+You are the agent instance with peer name `main-peer`.
+Peer names are session names — rename a session with the host's builtin `/rename <name>`.
+A session name is a valid peer address only in raw form: 1-24 of a-z A-Z 0-9 _ . - (no spaces);
+invalid names keep the default `<dir>-<pid>` address.
+They are addressable by name through the `peer_send` tool:
+`peer_send` to="<name>" injects a real prompt into that instance's agent, and its reply arrives here as a peer message.
+
+- `test-peer` — omp(34532) instance in C:\Users\nikko\Desktop\cc\any (idle)
+</peers>
 ```
 
 ## What it does
