@@ -19,27 +19,11 @@ peer_send to="backend" ...  injects a real prompt into that instance's agent
 
 </div>
 
-**What an agent actually sees, every prompt** — the injected `<peers>` roster note:
-
-```text
-<peers>
-You are the agent instance with peer name `main-peer`.
-Peer names are session names — rename a session with the host's builtin `/rename <name>`.
-A session name is a valid peer address only in raw form: 1-24 of a-z A-Z 0-9 _ . - (no spaces);
-invalid names keep the default `<dir>-<pid>` address.
-They are addressable by name through the `peer_send` tool:
-`peer_send` to="<name>" injects a real prompt into that instance's agent, and its reply arrives here as a peer message.
-
-- `test-peer` — omp(34532) instance in C:\work\any (idle)
-</peers>
-```
-
 ## What it does
 
 - **Install = opt-in.** Every omp/pi instance with the plugin loaded announces itself to a machine-global state dir and shows up in everyone's `/peers`. No join/leave commands, no channels.
 - **Peer name = session name.** Rename a session with the host's builtin `/rename <name>`; the peer address follows within seconds — even while everything is running, and across restarts. First-wins collision handling: if two instances take the same name, the older keeps it and the younger is addressable as `<name>-<pid>`.
-- **`peer_send {to, message, replyTo?}`** injects a real prompt into the named instance: it steers the peer mid-turn, or wakes it with a real agent turn when idle. The peer's reply arrives back as an attributed `[peer <name>]` message.
-- **The agent always knows itself.** Every prompt carries a `<peers>` roster note: the instance's own peer name, every live peer (name, pid, cwd, busy/idle), and the addressing guide. Ask an agent "who are your peers?" and it can answer and act.
+- **The agent always knows itself.** Every prompt carries a `<peers>` roster note — own peer name, every live peer (name · pid · cwd · busy/idle), and the addressing guide. Ask an agent "who are your peers?" and it can answer and act.
 
 Typical split — run one instance per role and let them coordinate:
 
@@ -49,6 +33,22 @@ Typical split — run one instance per role and let them coordinate:
 | frontend work | `frontend` | `backend` |
 | test runs | `qa` | everyone |
 | oversight | `orchestrator` | everyone |
+
+## How a conversation flows
+
+```mermaid
+sequenceDiagram
+    participant you as You (orchestrator)
+    participant backend as `backend` instance
+    participant qa as `qa` instance
+    you->>backend: "ask qa if the regression is fixed, report back"
+    backend->>qa: peer_send to="qa" — "is the login regression fixed?"
+    Note over qa: idle → wakes into a real turn<br/>busy → steers mid-turn, no interrupt
+    qa-->>backend: peer_send to="backend" — "fixed, merged 5 min ago"
+    backend-->>you: qa says fixed, merged 5 min ago
+```
+
+One command from you; the agents coordinate by name and the answer walks back up the chain. Every injected message is attributed (`[peer <name>]:`) and carries the exact reply line, so neither agent needs any setup to continue the conversation.
 
 ## Install
 
