@@ -1,0 +1,21 @@
+{
+  "name": "omp-peers",
+  "owner": {
+    "name": "Nikko Gonzales"
+  },
+  "metadata": {
+    "description": "Cross-session peer awareness for omp/pi",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "omp-peers",
+      "source": "./",
+      "version": "1.0.0",
+      "description": "Every running omp/pi instance sees the others by peer name and can prompt them via peer_send.",
+      "category": "development",
+      "license": "MIT",
+      "keywords": ["multi-agent", "peer-discovery", "cross-session", "peers", "oh-my-pi"]
+    }
+  ]
+}

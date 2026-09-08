@@ -28,8 +28,23 @@ Typical split — run one instance per role and let them coordinate:
 
 Requirements: Node.js 22+, and omp (`@oh-my-pi/pi-coding-agent`) 18.1.x or pi.
 
+**Marketplace (recommended — enables updates via `omp plugin upgrade omp-peers@omp-peers`):**
+
+```sh
+omp plugin marketplace add nikkoxgonzales/omp-peers
+omp plugin install omp-peers@omp-peers
+```
+
+**Direct from GitHub:**
+
 ```sh
 omp plugin install github:nikkoxgonzales/omp-peers
+```
+
+**From npm** — once published; `omp-peers` is not on npm yet, but the package is npm-ready (`npm publish` after `npm login`):
+
+```sh
+omp plugin install omp-peers
 ```
 
 Then restart omp. Verify with `/peers` — you should see yourself listed.
@@ -43,10 +58,10 @@ Then restart omp. Verify with `/peers` — you should see yourself listed.
 2. Create a junction (the same mechanism the CLI's marketplace path uses):
 
    ```sh
-   cmd /c mklink /J "%LOCALAPPDATA%\.omp\plugins\node_modules\omp-peers" "C:\path\to\omp-peers"
+   cmd /c mklink /J "%USERPROFILE%\.omp\plugins\node_modules\omp-peers" "C:\path\to\omp-peers"
    ```
 
-3. Add the plugin to `%LOCALAPPDATA%\.omp\plugins\omp-plugins.lock.json`:
+3. Add the plugin to `%USERPROFILE%\.omp\plugins\omp-plugins.lock.json`:
 
    ```json
    { "plugins": { "omp-peers": { "version": "1.0.0", "enabledFeatures": null, "enabled": true } }, "settings": {} }
@@ -55,6 +70,11 @@ Then restart omp. Verify with `/peers` — you should see yourself listed.
 4. `omp plugin list` should show `omp-peers@1.0.0`. Restart omp.
 
 </details>
+
+## Credits
+
+- **[agent-collective](https://github.com/andreiverdes/agent-collective)** by Andrei Verdes — the prior art this project grew out of. Its code directly informed the registry-stub bridge, routing inbound through the host send path, the hop cap and burst coalescing, and the per-process presence model. omp-peers exists because we wanted its capability with channel-style ceremony stripped out: no callsign discovery, no pairwise addressing — just named peers.
+- The upstream analysis in oh-my-pi issues [#8077](https://github.com/can1357/oh-my-pi/issues/8077) and [#7537](https://github.com/can1357/oh-my-pi/issues/7537) — which diagnosed why cross-process delivery fails from an extension and pointed at the correct injection path.
 
 ## Usage
 
