@@ -1,0 +1,107 @@
+/**
+ * Peer-name validation and cross-process deconfliction.
+ *
+ * A peer name is an address: `^[\w.-]{1,24}$`. `Main` is refused
+ * (case-sensitive exact match — it names the host's driving agent and must
+ * never be taken by a peer), as is any live local subagent id handed in via
+ * `localIds`. Cross-process collisions resolve first-wins by `startedAt`;
+ * the younger instance auto-suffixes `-<pid>`.
+ */
+
+import { basename } from 'node:path';
+
+import { PeerNameError } from '../errors.js';
+import type { PeerRecord } from '../types.js';
+
+export const PEER_NAME_PATTERN = /^[\w.-]{1,24}$/;
+
+/**
+ * The host driving agent's id. This is a REFUSED NAME, never a delivery
+ * address — the inbound path always targets this instance's own discovered
+ * local agent id (see `peers/inbound.ts`).
+ */
+const REFUSED_HOST_NAME = 'Main';
+
+export function isValidPeerName(name: string): boolean {
+  return PEER_NAME_PATTERN.test(name) && name !== REFUSED_HOST_NAME;
+}
+
+/** Throw {@link PeerNameError} unless `name` is usable as a peer address. */
+export function validatePeerName(name: string, opts: { localIds?: Iterable<string> } = {}): void {
+  if (!PEER_NAME_PATTERN.test(name)) {
+    throw new PeerNameError(
+      `invalid peer name "${name}" — use 1-24 of a-z A-Z 0-9 _ . - (no spaces)`
+    );
+  }
+  if (name === REFUSED_HOST_NAME) {
+    throw new PeerNameError(`"${name}" names the host driving agent — pick another peer name`);
+  }
+  if (opts.localIds !== undefined) {
+    for (const id of opts.localIds) {
+      if (id === name) {
+        throw new PeerNameError(
+          `"${name}" collides with a live local subagent id — pick another peer name`
+        );
+      }
+    }
+  }
+}
+
+/** Default address for an instance: sanitized `<basename(cwd)>-<pid>`. */
+export function defaultPeerName(cwd: string, pid: number): string {
+  const base =
+    basename(cwd)
+      .replace(/[^\w.-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 24) || 'peer';
+  return `${base}-${pid}`.slice(0, 24);
+}
+
+/**
+ * Derive a peer address from the host session name. A session name qualifies
+ * as an address ONLY in raw form: non-empty and matching
+ * {@link PEER_NAME_PATTERN} (1-24 of a-z A-Z 0-9 _ . -). Anything else —
+ * spaces, model-written auto-titles — falls back to {@link defaultPeerName}
+ * with `rejected` carrying the raw name so the caller can warn once.
+ * Cross-process collisions still resolve later via {@link resolvePeerName}.
+ */
+export function peerNameFromSession(
+  raw: string | undefined,
+  cwd: string,
+  pid: number
+): { name: string; rejected?: string } {
+  if (raw !== undefined && raw !== '' && PEER_NAME_PATTERN.test(raw)) {
+    return { name: raw };
+  }
+  return raw !== undefined && raw !== ''
+    ? { name: defaultPeerName(cwd, pid), rejected: raw }
+    : { name: defaultPeerName(cwd, pid) };
+}
+
+export interface ResolveNameInput {
+  candidate: string;
+  pid: number;
+  startedAt: number;
+  peers: PeerRecord[];
+  /** Live local subagent ids — treated as held, like an older peer. */
+  localIds?: Iterable<string>;
+}
+
+/**
+ * First-wins by `startedAt`: when another live peer holds `candidate` and
+ * started no later than us (or a local id holds it), take `<candidate>-<pid>`.
+ * The suffixed form is intentionally exempt from the 24-char cap so it stays
+ * deterministic and searchable.
+ */
+export function resolvePeerName(input: ResolveNameInput): string {
+  const heldByLocal =
+    input.localIds !== undefined
+      ? [...input.localIds].some((id) => id === input.candidate)
+      : false;
+  const clash =
+    heldByLocal ||
+    input.peers.some(
+      (p) => p.pid !== input.pid && p.name === input.candidate && p.startedAt <= input.startedAt
+    );
+  return clash ? `${input.candidate}-${input.pid}` : input.candidate;
+}

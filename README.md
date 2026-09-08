@@ -1,0 +1,97 @@
+# omp-peers
+
+Claude-Code-style cross-session peer awareness for [Oh My Pi](https://github.com/can1357/oh-my-pi) (omp) and pi agent instances. Every running session on the machine sees every other — live, by name, with no channels, no pairing ceremony, and no broker process.
+
+```
+/peers                      main-peer · omp(12776) · C:\work\api · glm-5.3-flash · idle · beat 3s ago
+/rename backend             that's it — your session name IS your peer address
+peer_send to="backend" ...  injects a real prompt into that instance's agent
+```
+
+## What it does
+
+- **Install = opt-in.** Every omp/pi instance with the plugin loaded announces itself to a machine-global state dir and shows up in everyone's `/peers`. No join/leave commands, no channels.
+- **Peer name = session name.** Rename a session with the host's builtin `/rename <name>`; the peer address follows within seconds — even while everything is running, and across restarts. First-wins collision handling: if two instances take the same name, the older keeps it and the younger is addressable as `<name>-<pid>`.
+- **`peer_send {to, message, replyTo?}`** injects a real prompt into the named instance: it steers the peer mid-turn, or wakes it with a real agent turn when idle. The peer's reply arrives back as an attributed `[peer <name>]` message.
+- **The agent always knows itself.** Every prompt carries a `<peers>` roster note: the instance's own peer name, every live peer (name, pid, cwd, busy/idle), and the addressing guide. Ask an agent "who are your peers?" and it can answer and act.
+
+Typical split — run one instance per role and let them coordinate:
+
+| Terminal | `/rename` | Talks to |
+|---|---|---|
+| backend work | `backend` | `frontend`, `qa`, `orchestrator` |
+| frontend work | `frontend` | `backend` |
+| test runs | `qa` | everyone |
+| oversight | `orchestrator` | everyone |
+
+## Install
+
+Requirements: Node.js 22+, and omp (`@oh-my-pi/pi-coding-agent`) 18.1.x or pi.
+
+```sh
+omp plugin install github:nikkoxgonzales/omp-peers
+```
+
+Then restart omp. Verify with `/peers` — you should see yourself listed.
+
+<details>
+<summary>Manual install (if the CLI errors on your machine)</summary>
+
+`omp plugin install <local-path>` and `omp plugin link` fail with `EPERM` on Windows without admin rights or Developer Mode — the CLI calls `fs.symlink` without a junction type (`installer.ts`), while its own marketplace path correctly uses junctions. Until that's fixed upstream, reproduce what a correct install would do:
+
+1. `npm run build` in a clone of this repo.
+2. Create a junction (the same mechanism the CLI's marketplace path uses):
+
+   ```sh
+   cmd /c mklink /J "%LOCALAPPDATA%\.omp\plugins\node_modules\omp-peers" "C:\path\to\omp-peers"
+   ```
+
+3. Add the plugin to `%LOCALAPPDATA%\.omp\plugins\omp-plugins.lock.json`:
+
+   ```json
+   { "plugins": { "omp-peers": { "version": "1.0.0", "enabledFeatures": null, "enabled": true } }, "settings": {} }
+   ```
+
+4. `omp plugin list` should show `omp-peers@1.0.0`. Restart omp.
+
+</details>
+
+## Usage
+
+| Command / tool | What it does |
+|---|---|
+| `/peers` | List live instances: name · harness(pid) · cwd · model · busy/idle · beat age. Interactive picker in the TUI when available. Always renders a fresh beat. |
+| `/rename <name>` | The host's builtin session rename. The peer name follows automatically. Valid peer addresses: 1–24 chars of `a-z A-Z 0-9 _ . -`; anything else (spaces, auto-generated titles) keeps the default `<dir>-<pid>` name. |
+| `peer_send` (agent tool) | `to` (peer name, from `/peers`), `message`, optional `replyTo`. Injects a real prompt into the peer: steers mid-turn, wakes when idle. Fire-and-forget — replies arrive as peer messages. |
+| `<peers>` context note | Injected into every prompt: your own name, every live peer, and the addressing guide. This is how agents know who they are and who to talk to. |
+
+Agents reply with `peer_send` too — every delivered message carries the exact reply line, so no tool discovery is needed on the far end.
+
+## Safety
+
+- **Explicit names only.** There is no broadcast/address-all; you message exactly the peer you name.
+- **Relay cap.** Agent-to-agent relays carry a hop counter; chains more than 4 hops from a human prompt are refused with an explanation.
+- **Coalescing.** Bursts from one sender within 400 ms are delivered as a single message — one wake, not N.
+- **Wake budget.** 20 real wakes per peer per rolling hour; excess queues as non-interrupting asides instead of starting turns.
+- **Per-session boundaries.** Messages are injected as attributed text into the peer's own session; no tools execute across processes.
+
+## How it works
+
+- **Presence**: each instance writes one owner-only file (`<pid>.json`) to a machine-global state dir, refreshed every 15 s with a 45 s liveness TTL. Liveness = `process.kill(pid, 0)` + fresh beat; crashed instances are reaped on sight. All registry writes are sidecar-write + `fsync` + `copyFile` — never `rename` over a live file (the Windows EPERM failure mode).
+- **Transport**: newline-delimited JSON over a per-pid named pipe (`\\.\pipe\peers-<pid>` on Windows) or unix socket elsewhere.
+- **Delivery**: inbound messages are delivered through the host's own session API (`pi.sendUserMessage` on the live context) — steer if busy, real turn if idle. The extension never imports host singleton modules (dynamic imports can bind a foreign module copy on compiled binaries) and never snapshots the session object (stale sessions are the classic way plugins "deliver" into the void).
+
+State dir: `%LOCALAPPDATA%\omp-peers\` (Windows), `~/.omp/var/omp-peers/` elsewhere; override with `OMP_PEERS_DIR`. Presence files are ephemeral — deleting the dir is safe.
+
+## Development
+
+```sh
+npm install
+npm test        # build + 25 acceptance tests (two fake peers, real sockets)
+```
+
+`dist/` is committed so installs load without a build step; run `npm run build` after changing `src/` and commit both.
+
+## License
+
+[MIT](LICENSE)

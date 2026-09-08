@@ -1,0 +1,58 @@
+/**
+ * `/peers` — list live instances: name · harness(pid) · cwd · model ·
+ * busy/idle · beat age. Text list always; the interactive picker runs ONLY
+ * when `typeof ctx.ui?.select === 'function' && ctx.mode === 'tui'`, else
+ * plain text. No UI module is ever imported — the primitive is probed on the
+ * live ctx and invoked as a receiver method.
+ */
+import { formatBeatAge } from '../peers/presence.js';
+/** `backend · omp(1234) · C:\work · model-id · working · beat 3s ago`. */
+export function formatPeerLine(p, now, selfName) {
+    const self = p.name === selfName ? ' · you' : '';
+    return `${p.name} · ${p.harness}(${p.pid}) · ${p.cwd} · ${p.model === '' ? '—' : p.model} · ${p.busy ? 'working' : 'idle'} · beat ${formatBeatAge(p.beatAt, now)}${self}`;
+}
+export function formatPeersText(snap, now) {
+    const lines = [...snap.peers]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((p) => formatPeerLine(p, now, snap.ownName));
+    const header = `peers (${snap.peers.length}) — you are \`${snap.ownName}\` via ${snap.mode === 'hub' ? 'hub bridge' : 'peer tools'}`;
+    return lines.length === 0 ? `${header} — no peers` : `${header}\n${lines.join('\n')}`;
+}
+export function registerPeersCommand(pi, getSnapshot) {
+    pi.registerCommand('peers', {
+        description: 'List live peer instances on this machine',
+        handler: async (_args, ctx) => {
+            try {
+                const snap = await getSnapshot();
+                const select = ctx.ui?.select;
+                if (typeof select === 'function' && ctx.mode === 'tui' && snap.peers.length > 0) {
+                    try {
+                        const picked = await select.call(ctx.ui, 'Peers — pick one for details', [...snap.peers]
+                            .sort((a, b) => a.name.localeCompare(b.name))
+                            .map((p) => ({
+                            label: p.name,
+                            description: `${p.harness}(${p.pid}) · ${p.cwd}${p.busy ? ' · working' : ''}`,
+                        })));
+                        if (typeof picked === 'string' && picked !== '') {
+                            const peer = snap.peers.find((p) => p.name === picked);
+                            ctx.ui.notify(peer !== undefined ? formatPeerLine(peer, Date.now(), snap.ownName) : formatPeersText(snap, Date.now()), 'info');
+                        }
+                        return;
+                    }
+                    catch {
+                        // Picker failed — fall through to the text list.
+                    }
+                }
+                ctx.ui.notify(formatPeersText(snap, Date.now()), 'info');
+            }
+            catch (err) {
+                try {
+                    ctx.ui.notify(`/peers failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+                }
+                catch {
+                    // Notify is best-effort.
+                }
+            }
+        },
+    });
+}

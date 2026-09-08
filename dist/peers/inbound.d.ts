@@ -1,0 +1,63 @@
+/**
+ * Inbound delivery — hand a socket message to the LOCAL agent.
+ *
+ * PRIMARY PATH: `cur.pi.sendUserMessage(text)` on the CURRENT context's pi
+ * with default semantics — streaming queues as steer, idle starts a turn,
+ * plan mode folds it into context. No registry lookup, no own-agent-id
+ * discovery, no drop-for-undiscovered: the host's bus copy is unreachable
+ * from a compiled extension, so delivery goes through the extension-host
+ * surface that is always live on the current context.
+ *
+ * STRUCTURAL RULE: the session is NEVER snapshotted at boot. The current
+ * `{pi, ctx}` comes from a live getter (refreshed on every host event).
+ * Over-budget wakes queue as asides
+ * (`pi.sendUserMessage(text, {deliverAs:'aside'})`), as does delivery on a
+ * bridgeless host — and always on the CURRENT pi, never a
+ * factory-captured one.
+ */
+import type { CommandContextLike, ExtensionHostLike, HubBridge } from './host.js';
+/** Per-peer wakes allowed per rolling hour before excess queues as asides. */
+export declare const MAX_WAKES_PER_PEER_PER_HOUR = 20;
+export declare const WAKE_WINDOW_MS = 3600000;
+export interface InboundCarrier {
+    from: string;
+    body: string;
+    replyTo?: string;
+}
+export interface CurrentHost {
+    pi: ExtensionHostLike;
+    ctx: CommandContextLike;
+}
+export type InboundOutcome = 'injected' | 'woken' | 'aside' | 'dropped';
+export interface InboundDeps {
+    /** Live getter for the freshest host handles — called on every delivery. */
+    getCurrent: () => CurrentHost | undefined;
+    /**
+     * Probed bridge, or undefined in tools mode (aside fallback). Retained only
+     * for the bridgeless distinction — delivery itself never touches the bus.
+     * The bridge's live use is `claimBridgedPeer` roster presence in the host.
+     */
+    bridge: HubBridge | undefined;
+    /** 'hub' when bridged (reply hints name `hub`), else 'tools'. */
+    mode: 'hub' | 'tools';
+    /** In-memory per-peer wake timestamps; owned by the caller. */
+    wakes?: Map<string, number[]>;
+    now?: () => number;
+}
+/** Every injection carries the `[peer <name>]` attribution prefix. */
+export declare function formatPeerText(from: string, body: string, opts?: {
+    replyTo?: string;
+    mode?: 'hub' | 'tools';
+}): string;
+/** True when `from` already consumed its hourly wake budget (prunes first). */
+export declare function isWakeOverBudget(wakes: Map<string, number[]>, from: string, now: number, max?: number): boolean;
+/** Record one real wake for `from` (prunes expired stamps). */
+export declare function recordPeerWake(wakes: Map<string, number[]>, from: string, now: number): void;
+/**
+ * Deliver one coalesced inbound message. Never throws; the outcome tells the
+ * socket layer what receipt to send back.
+ */
+export declare function deliverInboundPeerMessage(frame: InboundCarrier, deps: InboundDeps): Promise<{
+    outcome: InboundOutcome;
+    detail?: string;
+}>;

@@ -1,0 +1,54 @@
+{
+  "name": "omp-peers",
+  "version": "1.0.0",
+  "description": "Claude-Code-style cross-session peer awareness for Oh My Pi (omp) and pi: every running instance sees every other, live, on the same machine — /peers to list, /rename to name, peer_send to talk.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/peers.mjs",
+    "smoke": "npm run build && node test/peers.mjs"
+  },
+  "omp": {
+    "extensions": [
+      "./dist/extension.js"
+    ]
+  },
+  "pi": {
+    "extensions": [
+      "./dist/extension.js"
+    ]
+  },
+  "keywords": [
+    "oh-my-pi",
+    "pi-coding-agent",
+    "agents",
+    "peers",
+    "cross-session",
+    "messaging",
+    "multi-agent"
+  ],
+  "author": "Nikko Gonzales <nikkoxgonzales@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nikkoxgonzales/omp-peers.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.5.0",
+    "typescript": "^7.0.2"
+  }
+}
