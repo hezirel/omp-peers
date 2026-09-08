@@ -1,23 +1,23 @@
 <div align="center">
 
 ```text
-   ___  _ __ ___  _ __ ______ _ __   ___  ___ _ __ ___ 
-  / _ \| '_ ` _ \| '_ \______| '_ \ / _ \/ _ \ '__/ __|
- | (_) | | | | | | |_) |     | |_) |  __/  __/ |  \__ \
-  \___/|_| |_| |_| .__/      | .__/ \___|\___|_|  |___/
-                 | |         | |                       
-                 |_|         |_|                       
+ ██████╗ ███╗   ███╗██████╗       ██████╗ ███████╗███████╗██████╗ ███████╗
+██╔═══██╗████╗ ████║██╔══██╗      ██╔══██╗██╔════╝██╔════╝██╔══██╗██╔════╝
+██║   ██║██╔████╔██║██████╔╝█████╗██████╔╝█████╗  █████╗  ██████╔╝███████╗
+██║   ██║██║╚██╔╝██║██╔═══╝ ╚════╝██╔═══╝ ██╔══╝  ██╔══╝  ██╔══██╗╚════██║
+╚██████╔╝██║ ╚═╝ ██║██║           ██║     ███████╗███████║██║  ██║███████║
+ ╚═════╝ ╚═╝     ╚═╝╚═╝           ╚═╝     ╚══════╝╚══════╝╚═╝  ╚═╝╚══════╝
 ```
 
 **Cross-session peer awareness for [Oh My Pi](https://github.com/can1357/oh-my-pi) and pi** — every running agent instance sees every other, live, by name. No channels, no pairing ceremony, no broker process.
-
-</div>
 
 ```text
 /peers                      main-peer · omp(12776) · C:\work\api · glm-5.3-flash · idle · beat 3s ago
 /rename backend             that's it — your session name IS your peer address
 peer_send to="backend" ...  injects a real prompt into that instance's agent
 ```
+
+</div>
 
 **What an agent actually sees, every prompt** — the injected `<peers>` roster note:
 
@@ -30,7 +30,7 @@ invalid names keep the default `<dir>-<pid>` address.
 They are addressable by name through the `peer_send` tool:
 `peer_send` to="<name>" injects a real prompt into that instance's agent, and its reply arrives here as a peer message.
 
-- `test-peer` — omp(34532) instance in C:\Users\nikko\Desktop\cc\any (idle)
+- `test-peer` — omp(34532) instance in C:\work\any (idle)
 </peers>
 ```
 
