@@ -1,21 +1,4 @@
-<div align="center">
-
-```text
- #######  ##     ## ########          ########  ######## ######## ########  
-##     ## ###   ### ##     ##         ##     ## ##       ##       ##     ## 
-##     ## #### #### ##     ##         ##     ## ##       ##       ##     ## 
-##     ## ## ### ## ########  ####### ########  ######   ######   ########  
-##     ## ##     ## ##                ##        ##       ##       ##   ##   
-##     ## ##     ## ##                ##        ##       ##       ##    ##  
- #######  ##     ## ##                ##        ######## ######## ##     ## 
- ######                                                                     
-##    ##                                                                    
-##                                                                          
- ######                                                                     
-      ##                                                                    
-##    ##                                                                    
- ######                                                                     
-```
+# omp-peers
 
 **Cross-session peer awareness for [Oh My Pi](https://github.com/can1357/oh-my-pi) and pi** — every running agent instance sees every other, live, by name. No channels, no pairing ceremony, no broker process.
 
@@ -23,9 +6,6 @@
 /peers                      main-peer · omp(12776) · C:\work\api · glm-5.3-flash · idle · beat 3s ago
 /rename backend             that's it — your session name IS your peer address
 peer_send to="backend" ...  injects a real prompt into that instance's agent
-```
-
-</div>
 
 ## What it does
 
