@@ -16,7 +16,7 @@
  * factory-captured one.
  */
 
-import type { CommandContextLike, ExtensionHostLike, HubBridge } from './host.js';
+import type { CommandContextLike, ExtensionHostLike } from './host.js';
 
 /** Per-peer wakes allowed per rolling hour before excess queues as asides. */
 export const MAX_WAKES_PER_PEER_PER_HOUR = 20;
@@ -38,25 +38,13 @@ export type InboundOutcome = 'injected' | 'woken' | 'aside' | 'dropped';
 export interface InboundDeps {
   /** Live getter for the freshest host handles — called on every delivery. */
   getCurrent: () => CurrentHost | undefined;
-  /**
-   * Probed bridge, or undefined in tools mode (aside fallback). Retained only
-   * for the bridgeless distinction — delivery itself never touches the bus.
-   * The bridge's live use is `claimBridgedPeer` roster presence in the host.
-   */
-  bridge: HubBridge | undefined;
-  /** 'hub' when bridged (reply hints name `hub`), else 'tools'. */
-  mode: 'hub' | 'tools';
   /** In-memory per-peer wake timestamps; owned by the caller. */
   wakes?: Map<string, number[]>;
   now?: () => number;
 }
 
-/** Every injection carries the `[peer <name>]` attribution prefix. */
-export function formatPeerText(
-  from: string,
-  body: string,
-  opts: { replyTo?: string; mode?: 'hub' | 'tools' } = {}
-): string {
+/** Every injection carries the `[peer <name>]` prefix plus a peer-not-user line. */
+export function formatPeerText(from: string, body: string, opts: { replyTo?: string } = {}): string {
   return [
     `[peer ${from}]${opts.replyTo !== undefined && opts.replyTo !== '' ? ` (reply to ${opts.replyTo})` : ''}:`,
     '',
@@ -65,6 +53,7 @@ export function formatPeerText(
     // Always `peer_send`: it works on every host shape. Even in hub mode the
     // probe may hold a foreign registry copy where `hub` op=send cannot
     // resolve peer names — pointing replies there strands the sender.
+    `This message is from peer \`${from}\` — another agent instance, not your user.`,
     `Reply with \`peer_send\` to="${from}" if a response is useful.`,
   ].join('\n');
 }
@@ -124,7 +113,7 @@ export async function deliverInboundPeerMessage(
   if (from === '' || body === '') return { outcome: 'dropped', detail: 'empty frame' };
 
   const wakes = deps.wakes ?? new Map<string, number[]>();
-  const text = formatPeerText(from, body, { replyTo: frame.replyTo, mode: deps.mode });
+  const text = formatPeerText(from, body, { replyTo: frame.replyTo });
 
   let willWake = true;
   try {
@@ -137,11 +126,6 @@ export async function deliverInboundPeerMessage(
     return { outcome: 'aside', detail: 'hourly wake budget exceeded' };
   }
 
-  if (deps.bridge === undefined) {
-    aside(cur.pi, text);
-    return { outcome: 'aside', detail: 'no hub bridge on this host' };
-  }
-
   if (typeof cur.pi.sendUserMessage !== 'function') {
     warn(cur.ctx, `peers: dropped a message from ${from} — the host has no sendUserMessage`);
     return { outcome: 'dropped', detail: 'no sendUserMessage on host' };
@@ -149,7 +133,7 @@ export async function deliverInboundPeerMessage(
   try {
     cur.pi.sendUserMessage(text);
     if (willWake) recordPeerWake(wakes, from, now);
-    return { outcome: 'injected' };
+    return { outcome: willWake ? 'woken' : 'injected' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     warn(cur.ctx, `peers: message from ${from} could not be delivered (${message})`);

@@ -150,11 +150,13 @@ async function tick(st: NodeState): Promise<void> {
     else logOf(st, `peers: ${text}`);
   }
   const base = derived.name;
-  let others: PeerRecord[];
+  let others: PeerRecord[] | undefined;
   try {
     others = (await listLivePeers(st.stateDir, st.pid)).filter((p) => p.pid !== st.pid);
   } catch {
-    others = [];
+    // Transient listing failure: fall back to the last-good roster below
+    // and skip the bridge sync — never release claims on a failed listing.
+    others = undefined;
   }
   let localIds: string[] = [];
   if (BRIDGE !== undefined) {
@@ -168,7 +170,7 @@ async function tick(st: NodeState): Promise<void> {
     candidate: base,
     pid: st.pid,
     startedAt: st.startedAt,
-    peers: others,
+    peers: others ?? st.peers.filter((p) => p.pid !== st.pid),
     localIds,
   });
   st.sessionId = sessionId;
@@ -189,8 +191,12 @@ async function tick(st: NodeState): Promise<void> {
   } catch (err) {
     logOf(st, `peers: heartbeat failed: ${err instanceof Error ? err.message : String(err)}`);
   }
-  st.peers = own !== undefined ? [...others, own].sort((a, b) => a.name.localeCompare(b.name)) : others;
-  if (BRIDGE !== undefined) syncBridge(st, others);
+  const lastOthers = st.peers.filter((p) => p.pid !== st.pid);
+  st.peers =
+    own !== undefined
+      ? [...(others ?? lastOthers), own].sort((a, b) => a.name.localeCompare(b.name))
+      : (others ?? lastOthers);
+  if (BRIDGE !== undefined && others !== undefined) syncBridge(st, others);
 }
 
 function syncBridge(st: NodeState, others: PeerRecord[]): void {
@@ -290,8 +296,6 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
             if (live !== undefined) live.inboundHop = msg.hop;
             const res = await deliverInboundPeerMessage(msg, {
               getCurrent: () => currentOf(),
-              bridge: BRIDGE,
-              mode: rosterMode(),
               ...(live !== undefined ? { wakes: live.wakes } : {}),
             });
             return res.outcome;
@@ -401,12 +405,10 @@ export default function peersExtension(pi: ExtensionHostLike): void {
   pi.on('input', (event) => {
     const source = (event as { source?: string } | undefined)?.source;
     if (source === 'extension') return;
-    if (node !== undefined && !node.stopped) {
-      node.inboundHop = undefined;
-      // Re-beat on user activity so a fresh /rename propagates to the
-      // roster within this prompt instead of the next 15s tick.
-      void tick(node).catch(() => {});
-    }
+    // A human prompt ends any relay chain: the next send starts at hop 0.
+    // (No re-beat here: the context handler builds the roster from the last
+    // good tick, so an async beat could never land in time for this prompt.)
+    if (node !== undefined && !node.stopped) node.inboundHop = undefined;
   });
   pi.on('context', (event, ctx) => {
     const st = ensureNode(pi, ctx);

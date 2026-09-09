@@ -25,6 +25,10 @@ export const MAX_HOPS = 4;
 export const COALESCE_MS = 400;
 /** Socket round-trip timeout for outbound sends. */
 export const PEER_REQUEST_TIMEOUT_MS = 8_000;
+/** Idle server-side sockets are destroyed after this long without a frame. */
+export const SOCKET_IDLE_MS = 30_000;
+/** Largest buffered frame per socket before the connection is dropped. */
+export const MAX_FRAME_BYTES = 1_048_576;
 
 /** Where this peer listens (and where others reach it). */
 export function peerSocketAddress(stateDir: string, pid: number): string {
@@ -161,9 +165,27 @@ export function startPeerServer(opts: PeerServerOptions): PeerServerHandle {
         // Destroy is best-effort.
       }
     });
+    socket.setTimeout(SOCKET_IDLE_MS);
+    socket.on('timeout', () => {
+      try {
+        socket.destroy();
+      } catch {
+        // Destroy is best-effort.
+      }
+    });
     let buffer = '';
     socket.on('data', (chunk: unknown) => {
       buffer += String(chunk);
+      if (buffer.length > MAX_FRAME_BYTES) {
+        reply(socket, { ok: false, error: 'frame too large' });
+        try {
+          socket.destroy();
+        } catch {
+          // Destroy is best-effort.
+        }
+        buffer = '';
+        return;
+      }
       let index = buffer.indexOf('\n');
       while (index !== -1) {
         const line = buffer.slice(0, index);

@@ -263,7 +263,7 @@ export async function durableWriteJson(
   for (;;) {
     const sidecar = sidecarPathFor(filePath);
     try {
-      const fh = await open(sidecar, 'wx');
+      const fh = await open(sidecar, 'wx', 0o600);
       try {
         await fh.writeFile(text, 'utf8');
         await fh.sync();

@@ -71,24 +71,6 @@ function fakeCtx(sessionId, { idle = true } = {}) {
   };
 }
 
-function fakeRegistry(refs) {
-  return {
-    refs,
-    get(_id) {
-      return undefined;
-    },
-    list() {
-      return this.refs;
-    },
-    register() {
-      return {};
-    },
-    unregister() {
-      return true;
-    },
-  };
-}
-
 describe('presence beat → roster lists both peers', () => {
   it('beats two fake peers and lists both live', async () => {
     await writePeerBeat({
@@ -134,6 +116,13 @@ describe('presence beat → roster lists both peers', () => {
       isAlive: (pid) => pid !== 2147483647,
     });
     assert.deepEqual(after.map((p) => p.name), ['alpha', 'beta']);
+  });
+
+  it('compacts the roster note when no peers are live', () => {
+    const solo = buildPeersNote('alpha', [], 'tools');
+    assert.match(solo, /`alpha`/);
+    assert.match(solo, /No other peers are live/);
+    assert.doesNotMatch(solo, /peer_send/);
   });
 
   it('formats the /peers text columns', () => {
@@ -229,32 +218,54 @@ describe('outbound frame → inbound path', () => {
     assert.equal(deliveries, 1);
   });
 
+  it('drops oversized frames without delivering', async () => {
+    const before = deliveries;
+    const res = await requestPeer(addrB, { t: 'msg', from: 'big', body: 'x'.repeat(2_000_000), hop: 0 });
+    assert.equal(res?.ok, false);
+    assert.match(res?.error ?? '', /too large/);
+    assert.equal(deliveries, before);
+  });
+
   it('stops the server', () => {
     server.stop();
   });
 });
 
 describe('inbound delivery against a fake host', () => {
-  const DUMMY_BRIDGE = { registry: fakeRegistry([]) };
+  const live = (opts) => {
+    const cur = fakeCtx('sess-beta', opts);
+    return { cur, deps: { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }) } };
+  };
 
   it('delivers attributed text through sendUserMessage with default options', async () => {
-    const cur = fakeCtx('sess-beta');
-    const res = await deliverInboundPeerMessage(
-      { from: 'alpha', body: 'hello' },
-      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), bridge: DUMMY_BRIDGE, mode: 'tools' }
-    );
-    assert.equal(res.outcome, 'injected');
+    const { cur, deps } = live();
+    const res = await deliverInboundPeerMessage({ from: 'alpha', body: 'hello' }, deps);
+    assert.equal(res.outcome, 'woken');
     assert.equal(cur.sent.length, 1);
     assert.match(cur.sent[0].text, /^\[peer alpha\]/);
     assert.match(cur.sent[0].text, /hello/);
     assert.match(cur.sent[0].text, /peer_send/);
+    assert.match(cur.sent[0].text, /not your user/);
     assert.equal(cur.sent[0].opts, undefined);
     assert.equal(/Main/.test(cur.sent[0].text), false);
   });
 
+  it('steers a busy host mid-turn without spending wake budget', async () => {
+    const cur = fakeCtx('sess-beta', { idle: false });
+    const wakes = new Map();
+    const res = await deliverInboundPeerMessage(
+      { from: 'alpha', body: 'hello' },
+      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), wakes }
+    );
+    assert.equal(res.outcome, 'injected');
+    assert.equal(cur.sent.length, 1);
+    assert.equal(cur.sent[0].opts, undefined);
+    assert.equal(wakes.has('alpha'), false);
+  });
+
   it('drops empty frames and missing contexts without touching the host', async () => {
     const cur = fakeCtx('sess-beta');
-    const deps = { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), bridge: DUMMY_BRIDGE, mode: 'tools' };
+    const deps = { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }) };
     assert.equal((await deliverInboundPeerMessage({ from: '', body: 'hi' }, deps)).outcome, 'dropped');
     assert.equal((await deliverInboundPeerMessage({ from: 'alpha', body: '' }, deps)).outcome, 'dropped');
     assert.equal(
@@ -270,7 +281,7 @@ describe('inbound delivery against a fake host', () => {
     const wakes = new Map([['alpha', Array.from({ length: 20 }, (_, i) => now - i * 1000)]]);
     const res = await deliverInboundPeerMessage(
       { from: 'alpha', body: 'again' },
-      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), bridge: DUMMY_BRIDGE, mode: 'tools', wakes, now: () => now }
+      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), wakes, now: () => now }
     );
     assert.equal(res.outcome, 'aside');
     assert.equal(cur.sent.length, 1);
@@ -278,17 +289,17 @@ describe('inbound delivery against a fake host', () => {
     assert.equal(cur.sent[0].opts?.deliverAs, 'aside');
   });
 
-  it('bridgeless hosts still deliver as an aside', async () => {
+  it('delivers on bridgeless hosts through sendUserMessage (no aside fallback)', async () => {
     const cur = fakeCtx('sess-beta');
     const res = await deliverInboundPeerMessage(
       { from: 'alpha', body: 'plain' },
-      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), bridge: undefined, mode: 'tools' }
+      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }) }
     );
-    assert.equal(res.outcome, 'aside');
+    assert.equal(res.outcome, 'woken');
     assert.equal(cur.sent.length, 1);
     assert.match(cur.sent[0].text, /^\[peer alpha\]/);
     assert.match(cur.sent[0].text, /peer_send/);
-    assert.equal(cur.sent[0].opts?.deliverAs, 'aside');
+    assert.equal(cur.sent[0].opts, undefined);
   });
 
   it('never throws when the host send fails', async () => {
@@ -298,7 +309,7 @@ describe('inbound delivery against a fake host', () => {
     };
     const res = await deliverInboundPeerMessage(
       { from: 'alpha', body: 'boom' },
-      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), bridge: DUMMY_BRIDGE, mode: 'tools' }
+      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }) }
     );
     assert.equal(res.outcome, 'dropped');
     assert.match(res.detail ?? '', /host busy/);
@@ -310,9 +321,9 @@ describe('inbound delivery against a fake host', () => {
     const cur = fakeCtx('sess-beta');
     const res = await deliverInboundPeerMessage(
       { from: 'alpha', body: 'wake up' },
-      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), bridge: DUMMY_BRIDGE, mode: 'tools', wakes }
+      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), wakes }
     );
-    assert.equal(res.outcome, 'injected');
+    assert.equal(res.outcome, 'woken');
     assert.equal((wakes.get('alpha') ?? []).length, 1);
     assert.equal(isWakeOverBudget(wakes, 'alpha', Date.now(), 1), true);
     assert.equal(isWakeOverBudget(wakes, 'alpha', Date.now(), 2), false);
@@ -320,12 +331,13 @@ describe('inbound delivery against a fake host', () => {
     assert.equal((wakes.get('alpha') ?? []).length, 2);
   });
 
-  it('prefixes every injection and always points replies at peer_send', () => {
-    // hub mode too: the probe may hold a foreign registry copy where hub
-    // op=send cannot resolve peer names — the hint must never offer it.
-    assert.match(formatPeerText('a', 'b', { mode: 'hub' }), /^\[peer a\]/);
-    assert.match(formatPeerText('a', 'b', { mode: 'hub' }), /Reply with `peer_send` to="a"/);
-    assert.doesNotMatch(formatPeerText('a', 'b', { mode: 'hub' }), /`hub`/);
+  it('prefixes every injection, names the peer as not-the-user, and points replies at peer_send', () => {
+    // The hint must never offer `hub` op=send: the probe may hold a foreign
+    // registry copy where hub cannot resolve peer names.
+    assert.match(formatPeerText('a', 'b'), /^\[peer a\]/);
+    assert.match(formatPeerText('a', 'b'), /from peer `a`.*not your user/);
+    assert.match(formatPeerText('a', 'b'), /Reply with `peer_send` to="a"/);
+    assert.doesNotMatch(formatPeerText('a', 'b'), /`hub`/);
   });
 });
 

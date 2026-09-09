@@ -18,7 +18,7 @@
 /** Per-peer wakes allowed per rolling hour before excess queues as asides. */
 export const MAX_WAKES_PER_PEER_PER_HOUR = 20;
 export const WAKE_WINDOW_MS = 3_600_000;
-/** Every injection carries the `[peer <name>]` attribution prefix. */
+/** Every injection carries the `[peer <name>]` prefix plus a peer-not-user line. */
 export function formatPeerText(from, body, opts = {}) {
     return [
         `[peer ${from}]${opts.replyTo !== undefined && opts.replyTo !== '' ? ` (reply to ${opts.replyTo})` : ''}:`,
@@ -28,6 +28,7 @@ export function formatPeerText(from, body, opts = {}) {
         // Always `peer_send`: it works on every host shape. Even in hub mode the
         // probe may hold a foreign registry copy where `hub` op=send cannot
         // resolve peer names — pointing replies there strands the sender.
+        `This message is from peer \`${from}\` — another agent instance, not your user.`,
         `Reply with \`peer_send\` to="${from}" if a response is useful.`,
     ].join('\n');
 }
@@ -75,7 +76,7 @@ export async function deliverInboundPeerMessage(frame, deps) {
     if (from === '' || body === '')
         return { outcome: 'dropped', detail: 'empty frame' };
     const wakes = deps.wakes ?? new Map();
-    const text = formatPeerText(from, body, { replyTo: frame.replyTo, mode: deps.mode });
+    const text = formatPeerText(from, body, { replyTo: frame.replyTo });
     let willWake = true;
     try {
         willWake = cur.ctx.isIdle?.() !== false;
@@ -87,10 +88,6 @@ export async function deliverInboundPeerMessage(frame, deps) {
         aside(cur.pi, text);
         return { outcome: 'aside', detail: 'hourly wake budget exceeded' };
     }
-    if (deps.bridge === undefined) {
-        aside(cur.pi, text);
-        return { outcome: 'aside', detail: 'no hub bridge on this host' };
-    }
     if (typeof cur.pi.sendUserMessage !== 'function') {
         warn(cur.ctx, `peers: dropped a message from ${from} — the host has no sendUserMessage`);
         return { outcome: 'dropped', detail: 'no sendUserMessage on host' };
@@ -99,7 +96,7 @@ export async function deliverInboundPeerMessage(frame, deps) {
         cur.pi.sendUserMessage(text);
         if (willWake)
             recordPeerWake(wakes, from, now);
-        return { outcome: 'injected' };
+        return { outcome: willWake ? 'woken' : 'injected' };
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);

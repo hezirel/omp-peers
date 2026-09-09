@@ -15,7 +15,7 @@
  * bridgeless host — and always on the CURRENT pi, never a
  * factory-captured one.
  */
-import type { CommandContextLike, ExtensionHostLike, HubBridge } from './host.js';
+import type { CommandContextLike, ExtensionHostLike } from './host.js';
 /** Per-peer wakes allowed per rolling hour before excess queues as asides. */
 export declare const MAX_WAKES_PER_PEER_PER_HOUR = 20;
 export declare const WAKE_WINDOW_MS = 3600000;
@@ -32,22 +32,13 @@ export type InboundOutcome = 'injected' | 'woken' | 'aside' | 'dropped';
 export interface InboundDeps {
     /** Live getter for the freshest host handles — called on every delivery. */
     getCurrent: () => CurrentHost | undefined;
-    /**
-     * Probed bridge, or undefined in tools mode (aside fallback). Retained only
-     * for the bridgeless distinction — delivery itself never touches the bus.
-     * The bridge's live use is `claimBridgedPeer` roster presence in the host.
-     */
-    bridge: HubBridge | undefined;
-    /** 'hub' when bridged (reply hints name `hub`), else 'tools'. */
-    mode: 'hub' | 'tools';
     /** In-memory per-peer wake timestamps; owned by the caller. */
     wakes?: Map<string, number[]>;
     now?: () => number;
 }
-/** Every injection carries the `[peer <name>]` attribution prefix. */
+/** Every injection carries the `[peer <name>]` prefix plus a peer-not-user line. */
 export declare function formatPeerText(from: string, body: string, opts?: {
     replyTo?: string;
-    mode?: 'hub' | 'tools';
 }): string;
 /** True when `from` already consumed its hourly wake budget (prunes first). */
 export declare function isWakeOverBudget(wakes: Map<string, number[]>, from: string, now: number, max?: number): boolean;

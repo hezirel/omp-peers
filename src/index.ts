@@ -59,6 +59,8 @@ export {
   MAX_HOPS,
   COALESCE_MS,
   PEER_REQUEST_TIMEOUT_MS,
+  SOCKET_IDLE_MS,
+  MAX_FRAME_BYTES,
   peerSocketAddress,
   startPeerServer,
   requestPeer,

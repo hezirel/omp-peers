@@ -13,7 +13,7 @@ export { PEER_NAME_PATTERN, isValidPeerName, validatePeerName, defaultPeerName, 
 // Presence.
 export { writePeerBeat, listLivePeers, removePeerRecord, startPresenceBeat, formatBeatAge, HEARTBEAT_MS, PEER_TTL_MS, } from './peers/presence.js';
 // Transport.
-export { MAX_HOPS, COALESCE_MS, PEER_REQUEST_TIMEOUT_MS, peerSocketAddress, startPeerServer, requestPeer, } from './peers/server.js';
+export { MAX_HOPS, COALESCE_MS, PEER_REQUEST_TIMEOUT_MS, SOCKET_IDLE_MS, MAX_FRAME_BYTES, peerSocketAddress, startPeerServer, requestPeer, } from './peers/server.js';
 // Delivery.
 export { deliverInboundPeerMessage, formatPeerText, isWakeOverBudget, recordPeerWake, MAX_WAKES_PER_PEER_PER_HOUR, WAKE_WINDOW_MS, } from './peers/inbound.js';
 export { sendToPeer } from './peers/outbound.js';

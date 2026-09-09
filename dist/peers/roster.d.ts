@@ -16,7 +16,7 @@ export interface RosterMessage {
         text?: string;
     }>;
 }
-/** Identity line + addressing guide + one row per peer. */
+/** Identity line + contact rule + peer definition + one row per peer (solo compacts to two lines). */
 export declare function buildPeersNote(ownName: string, peers: PeerRecord[], mode: RosterMode): string;
 /**
  * Fold `note` into the last user message (string content is suffixed, array

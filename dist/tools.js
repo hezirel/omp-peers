@@ -11,7 +11,7 @@ export function registerPeerSendTool(pi, deps) {
     pi.registerTool({
         name: 'peer_send',
         label: 'Peer Send',
-        description: 'Send a message to another live peer instance by name (see `/peers`). It is delivered as a real prompt: it steers the peer mid-turn or wakes it if idle. Fire-and-forget — the peer\'s reply arrives as a separate peer message.',
+        description: 'Send a message to another live peer instance by name (see `/peers`). Only use when the user explicitly asks for cross-instance contact, or to reply to an inbound peer message — never use peers as subagents on your own. It is delivered as a real prompt: it steers the peer mid-turn or wakes it if idle. Fire-and-forget — the peer\'s reply arrives as a separate peer message.',
         parameters: {
             type: 'object',
             properties: {

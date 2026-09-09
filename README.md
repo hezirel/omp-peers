@@ -8,18 +8,16 @@
 peer_send to="backend" ...  injects a real prompt into that instance's agent
 ```
 
-**What an agent actually sees, every prompt** — the injected `<peers>` roster note:
+**What an agent actually sees, every prompt** — the injected `<peers>` roster note (solo prompts compact to the first line):
 
 ```text
 <peers>
-You are the agent instance with peer name `main-peer`.
-Peer names are session names — rename a session with the host's builtin `/rename <name>`.
-A session name is a valid peer address only in raw form: 1-24 of a-z A-Z 0-9 _ . - (no spaces);
-invalid names keep the default `<dir>-<pid>` address.
-They are addressable by name through the `peer_send` tool:
-`peer_send` to="<name>" injects a real prompt into that instance's agent, and its reply arrives here as a peer message.
+You are `main-peer`. Do NOT message peers unless the user explicitly asks, or to reply to an inbound peer message.
+A peer is another live agent instance on this machine. Its messages reach you as user text starting with `[peer <name>]:` — that is the peer speaking, not your user.
+`peer_send` to="<name>" delivers a real prompt there; its reply arrives here as a peer message.
+Names are session names (`/rename <name>`); valid 1-24 [a-zA-Z0-9_.-], else `<dir>-<pid>`.
 
-- `test-peer` — omp(34532) instance in C:\work\any (idle)
+- `test-peer` — omp(34532) in C:\work\any (idle)
 </peers>
 ```
 
@@ -113,7 +111,7 @@ Then restart omp. Verify with `/peers` — you should see yourself listed.
 | `/peers` | List live instances: name · harness(pid) · cwd · model · busy/idle · beat age. Interactive picker in the TUI when available. Always renders a fresh beat. |
 | `/rename <name>` | The host's builtin session rename. The peer name follows automatically. Valid peer addresses: 1–24 chars of `a-z A-Z 0-9 _ . -`; anything else (spaces, auto-generated titles) keeps the default `<dir>-<pid>` name. |
 | `peer_send` (agent tool) | `to` (peer name, from `/peers`), `message`, optional `replyTo`. Injects a real prompt into the peer: steers mid-turn, wakes when idle. Fire-and-forget — replies arrive as peer messages. |
-| `<peers>` context note | Injected into every prompt: your own name, every live peer, and the addressing guide. This is how agents know who they are and who to talk to. |
+| `<peers>` context note | Injected into every prompt: your own name, the no-contact-unless-asked rule, what a peer message looks like (`[peer <name>]:` — the peer, not your user), and every live peer. Solo prompts compact to own-name only. |
 
 Agents reply with `peer_send` too — every delivered message carries the exact reply line, so no tool discovery is needed on the far end.
 

@@ -18,6 +18,10 @@ export declare const MAX_HOPS = 4;
 export declare const COALESCE_MS = 400;
 /** Socket round-trip timeout for outbound sends. */
 export declare const PEER_REQUEST_TIMEOUT_MS = 8000;
+/** Idle server-side sockets are destroyed after this long without a frame. */
+export declare const SOCKET_IDLE_MS = 30000;
+/** Largest buffered frame per socket before the connection is dropped. */
+export declare const MAX_FRAME_BYTES = 1048576;
 /** Where this peer listens (and where others reach it). */
 export declare function peerSocketAddress(stateDir: string, pid: number): string;
 export interface InboundMessage {
