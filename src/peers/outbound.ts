@@ -50,6 +50,7 @@ export async function sendToPeer(
       return `No response from ${name} (socket closed).`;
     }
     if (!reply.ok) return `Delivery to ${name} failed: ${reply.error ?? 'unknown error'}`;
+    if (reply.outcome === 'held') return `Held at ${name} (typing) — delivers when they submit. Its reply will arrive as a peer message.`;
     return `Delivered to ${name} (${reply.outcome ?? 'injected'}). Its reply will arrive as a peer message.`;
   } catch (err) {
     return `Delivery to ${name} failed: ${err instanceof Error ? err.message : String(err)}`;

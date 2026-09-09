@@ -45,6 +45,7 @@ const {
   formatPeersText,
   peerPath,
   PEER_TTL_MS,
+  HOLD_TIMEOUT_MS,
   registerPeerSendTool,
 } = await import('../dist/index.js');
 
@@ -144,6 +145,14 @@ describe('presence beat → roster lists both peers', () => {
     assert.match(text, /alpha · omp\(47111\) · \/w\/a · m1 · working · beat 3s ago · you/);
   });
 
+  it('surfaces held batches in the /peers header', () => {
+    const now = Date.now();
+    const held = formatPeersText({ ownName: 'alpha', mode: 'tools', peers: [], held: 2 }, now);
+    assert.match(held, /held 2/);
+    const clear = formatPeersText({ ownName: 'alpha', mode: 'tools', peers: [] }, now);
+    assert.doesNotMatch(clear, /held/);
+  });
+
   it('appends the roster note to the last user message', () => {
     const messages = [
       { role: 'assistant', content: 'hi' },
@@ -225,6 +234,30 @@ describe('outbound frame → inbound path', () => {
     assert.equal(res?.ok, false);
     assert.match(res?.error ?? '', /too large/);
     assert.equal(deliveries, before);
+  });
+
+  it('reports held receipts with typing text', async () => {
+    const addrC = peerSocketAddress(STATE, 47444);
+    const heldServer = startPeerServer({
+      address: addrC,
+      ownName: () => 'gamma',
+      onMessage: async () => 'held',
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const recordC = {
+        v: 1, pid: 47444, name: 'gamma', cwd: '/w/c', project: 'c', harness: 'omp',
+        sessionId: '', model: '', socket: addrC, startedAt: 1, beatAt: Date.now(), busy: false,
+      };
+      const receipt = await sendToPeer('gamma', 'knock knock', {
+        ownName: 'alpha',
+        hop: 0,
+        listPeers: async () => [recordC],
+      });
+      assert.match(receipt, /^Held at gamma \(typing\)/);
+    } finally {
+      heldServer.stop();
+    }
   });
 
   it('stops the server', () => {
@@ -339,6 +372,40 @@ describe('inbound delivery against a fake host', () => {
     assert.match(formatPeerText('a', 'b'), /from peer `a`.*not your user/);
     assert.match(formatPeerText('a', 'b'), /Reply with `peer_send` to="a"/);
     assert.doesNotMatch(formatPeerText('a', 'b'), /`hub`/);
+  });
+
+  it('holds delivery while the idle peer is typing, without touching the host', async () => {
+    const cur = fakeCtx('sess-beta');
+    const res = await deliverInboundPeerMessage(
+      { from: 'alpha', body: 'hello' },
+      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), getDraftText: () => 'half-typed…' }
+    );
+    assert.equal(res.outcome, 'held');
+    assert.equal(cur.sent.length, 0);
+  });
+
+  it('still steers a busy peer mid-turn even with a draft present', async () => {
+    const cur = fakeCtx('sess-beta', { idle: false });
+    const res = await deliverInboundPeerMessage(
+      { from: 'alpha', body: 'hello' },
+      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), getDraftText: () => 'half-typed…' }
+    );
+    assert.equal(res.outcome, 'injected');
+    assert.equal(cur.sent.length, 1);
+  });
+
+  it('delivers overstayed holds even while typing', async () => {
+    const cur = fakeCtx('sess-beta');
+    const res = await deliverInboundPeerMessage(
+      { from: 'alpha', body: 'hello' },
+      {
+        getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }),
+        getDraftText: () => 'half-typed…',
+        receivedAt: Date.now() - HOLD_TIMEOUT_MS - 1000,
+      }
+    );
+    assert.equal(res.outcome, 'woken');
+    assert.equal(cur.sent.length, 1);
   });
 });
 

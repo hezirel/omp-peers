@@ -77,10 +77,14 @@ export {
   recordPeerWake,
   MAX_WAKES_PER_PEER_PER_HOUR,
   WAKE_WINDOW_MS,
+  HOLD_TIMEOUT_MS,
+  MAX_HELD_BATCHES,
+  HOLD_POLL_MS,
   type InboundCarrier,
   type CurrentHost,
   type InboundOutcome,
   type InboundDeps,
+  type HeldBatch,
 } from './peers/inbound.js';
 export { sendToPeer, type OutboundDeps } from './peers/outbound.js';
 

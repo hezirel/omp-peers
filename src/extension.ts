@@ -31,7 +31,7 @@ import {
   releaseBridgedPeer,
 } from './peers/host.js';
 import { defaultPeerName, isValidPeerName, peerNameFromSession, resolvePeerName } from './peers/ids.js';
-import { deliverInboundPeerMessage } from './peers/inbound.js';
+import { deliverInboundPeerMessage, HOLD_POLL_MS, MAX_HELD_BATCHES, type HeldBatch } from './peers/inbound.js';
 import { sendToPeer } from './peers/outbound.js';
 import {
   HEARTBEAT_MS,
@@ -65,6 +65,9 @@ interface NodeState {
   claimed: Set<string>;
   wakes: Map<string, number[]>;
   inboundHop: number | undefined;
+  /** Batches held while the peer types, oldest first (bounded, polled). */
+  held: HeldBatch[];
+  holdTimer: NodeJS.Timeout | undefined;
   /** First rejected session name this process saw; doubles as the warned-once flag (undefined = never warned). */
   lastRejectedSessionName: string | undefined;
   current: { pi: ExtensionHostLike; ctx: CommandContextLike } | undefined;
@@ -78,6 +81,44 @@ let node: NodeState | undefined;
 
 function currentOf(): { pi: ExtensionHostLike; ctx: CommandContextLike } | undefined {
   return node?.stopped === false ? node.current : undefined;
+}
+
+/** Stash a held batch (bounded) and ensure the retry poller runs. */
+function holdBatch(st: NodeState, msg: { from: string; body: string; replyTo?: string; hop: number }): void {
+  st.held.push({ message: { ...msg }, receivedAt: Date.now() });
+  while (st.held.length > MAX_HELD_BATCHES) st.held.shift();
+  if (st.holdTimer !== undefined) return;
+  st.holdTimer = setInterval(() => {
+    void pumpHeld(st).catch((err: unknown) => logOf(st, `peers: held retry failed: ${err instanceof Error ? err.message : String(err)}`));
+  }, HOLD_POLL_MS);
+  st.holdTimer.unref?.();
+}
+
+/** Retry held batches oldest-first; drop each once it delivers or ages out. */
+async function pumpHeld(st: NodeState): Promise<void> {
+  if (st.stopped || node !== st) return;
+  for (const batch of [...st.held]) {
+    if (st.stopped || node !== st) return;
+    node.inboundHop = batch.message.hop;
+    const res = await deliverInboundPeerMessage(batch.message, {
+      getCurrent: () => currentOf(),
+      getDraftText: () => {
+        try {
+          const text = currentOf()?.ctx.ui.getEditorText?.() ?? '';
+          return typeof text === 'string' ? text : '';
+        } catch {
+          return '';
+        }
+      },
+      receivedAt: batch.receivedAt,
+      wakes: st.wakes,
+    });
+    if (res.outcome !== 'held') st.held = st.held.filter((b) => b !== batch);
+  }
+  if (st.held.length === 0 && st.holdTimer !== undefined) {
+    clearInterval(st.holdTimer);
+    st.holdTimer = undefined;
+  }
 }
 
 function warnOf(st: NodeState, text: string): void {
@@ -280,6 +321,8 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
       claimed: new Set<string>(),
       wakes: new Map<string, number[]>(),
       inboundHop: undefined,
+      held: [],
+      holdTimer: undefined,
       current: { pi, ctx },
       server: undefined,
       stopBeat: undefined,
@@ -302,8 +345,17 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
             if (live !== undefined) live.inboundHop = msg.hop;
             const res = await deliverInboundPeerMessage(msg, {
               getCurrent: () => currentOf(),
+              getDraftText: () => {
+                try {
+                  const text = currentOf()?.ctx.ui.getEditorText?.() ?? '';
+                  return typeof text === 'string' ? text : '';
+                } catch {
+                  return '';
+                }
+              },
               ...(live !== undefined ? { wakes: live.wakes } : {}),
             });
+            if (res.outcome === 'held' && live !== undefined) holdBatch(live, msg);
             return res.outcome;
           },
           onWarn: (text) => {
@@ -340,6 +392,15 @@ async function stopNode(st: NodeState): Promise<void> {
     // Shutdown never throws.
   }
   st.stopBeat = undefined;
+  if (st.holdTimer !== undefined) {
+    try {
+      clearInterval(st.holdTimer);
+    } catch {
+      // Shutdown never throws.
+    }
+    st.holdTimer = undefined;
+  }
+  st.held = [];
   try {
     st.server?.stop();
   } catch {
@@ -368,9 +429,9 @@ export default function peersExtension(pi: ExtensionHostLike): void {
       } catch {
         // Snapshot stays last-good.
       }
-      return { ownName: st.name, mode: rosterMode(), peers: st.peers };
+      return { ownName: st.name, mode: rosterMode(), peers: st.peers, held: st.held.length };
     }
-    return { ownName: '', mode: rosterMode(), peers: [] };
+    return { ownName: '', mode: rosterMode(), peers: [], held: 0 };
   });
 
 

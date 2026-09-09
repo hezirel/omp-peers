@@ -203,7 +203,8 @@ export function claimBridgedPeer(bridge, record, ownName, getHop, request, onWar
                 ...(msg.replyTo !== undefined && msg.replyTo !== '' ? { replyTo: msg.replyTo } : {}),
                 hop: getHop(),
             });
-            return reply?.outcome === 'woken' ? 'woken' : 'injected';
+            const outcome = reply?.outcome;
+            return outcome === 'woken' || outcome === 'held' ? outcome : 'injected';
         },
     };
     try {

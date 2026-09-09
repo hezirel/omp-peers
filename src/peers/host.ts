@@ -34,6 +34,8 @@ export interface UiLike {
     options: SelectOption[],
     dialogOptions?: unknown
   ) => Promise<string | undefined>;
+  /** Live composer text in interactive mode (absent headless) — typing protection reads this. */
+  getEditorText?: () => string;
   [key: string]: unknown;
 }
 
@@ -325,7 +327,8 @@ export function claimBridgedPeer(
         ...(msg.replyTo !== undefined && msg.replyTo !== '' ? { replyTo: msg.replyTo } : {}),
         hop: getHop(),
       });
-      return reply?.outcome === 'woken' ? 'woken' : 'injected';
+      const outcome = reply?.outcome;
+      return outcome === 'woken' || outcome === 'held' ? outcome : 'injected';
     },
   };
   try {

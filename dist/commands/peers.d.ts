@@ -11,6 +11,8 @@ export interface PeersSnapshot {
     ownName: string;
     mode: 'hub' | 'tools';
     peers: PeerRecord[];
+    /** Batches held while the peer types — shown so held mail is visible. */
+    held?: number;
 }
 /** `backend · omp(1234) · C:\work · model-id · working · beat 3s ago`. */
 export declare function formatPeerLine(p: PeerRecord, now: number, selfName: string): string;

@@ -15,10 +15,17 @@
  * bridgeless host — and always on the CURRENT pi, never a
  * factory-captured one.
  */
+import type { InboundMessage } from './server.js';
 import type { CommandContextLike, ExtensionHostLike } from './host.js';
 /** Per-peer wakes allowed per rolling hour before excess queues as asides. */
 export declare const MAX_WAKES_PER_PEER_PER_HOUR = 20;
 export declare const WAKE_WINDOW_MS = 3600000;
+/** A batch held while the peer types waits at most this long before delivering anyway. */
+export declare const HOLD_TIMEOUT_MS = 120000;
+/** Upper bound on batches waiting for the peer's composer to clear. */
+export declare const MAX_HELD_BATCHES = 20;
+/** How often a process retries its held batches. */
+export declare const HOLD_POLL_MS = 500;
 export interface InboundCarrier {
     from: string;
     body: string;
@@ -28,10 +35,19 @@ export interface CurrentHost {
     pi: ExtensionHostLike;
     ctx: CommandContextLike;
 }
-export type InboundOutcome = 'injected' | 'woken' | 'aside' | 'dropped';
+/** One coalesced batch waiting for the peer's composer to clear. */
+export interface HeldBatch {
+    message: InboundMessage;
+    receivedAt: number;
+}
+export type InboundOutcome = 'injected' | 'woken' | 'aside' | 'dropped' | 'held';
 export interface InboundDeps {
     /** Live getter for the freshest host handles — called on every delivery. */
     getCurrent: () => CurrentHost | undefined;
+    /** Live composer text — non-empty means the peer is typing. Absent headless. */
+    getDraftText?: () => string;
+    /** When this batch first arrived — bounds how long a hold may last. */
+    receivedAt?: number;
     /** In-memory per-peer wake timestamps; owned by the caller. */
     wakes?: Map<string, number[]>;
     now?: () => number;

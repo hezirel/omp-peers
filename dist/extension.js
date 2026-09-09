@@ -22,7 +22,7 @@
 import { registerPeersCommand } from './commands/peers.js';
 import { bridgeResolvesHost, claimBridgedPeer, listLocalAgentIds, probeHost, readTitleSource, releaseBridgedPeer, } from './peers/host.js';
 import { defaultPeerName, isValidPeerName, peerNameFromSession, resolvePeerName } from './peers/ids.js';
-import { deliverInboundPeerMessage } from './peers/inbound.js';
+import { deliverInboundPeerMessage, HOLD_POLL_MS, MAX_HELD_BATCHES } from './peers/inbound.js';
 import { sendToPeer } from './peers/outbound.js';
 import { HEARTBEAT_MS, listLivePeers, removePeerRecord, startPresenceBeat, writePeerBeat, } from './peers/presence.js';
 import { appendNoteToMessages, buildPeersNote } from './peers/roster.js';
@@ -38,6 +38,48 @@ const BRIDGE = probe.kind === 'hub-bridge' ? probe.bridge : undefined;
 let node;
 function currentOf() {
     return node?.stopped === false ? node.current : undefined;
+}
+/** Stash a held batch (bounded) and ensure the retry poller runs. */
+function holdBatch(st, msg) {
+    st.held.push({ message: { ...msg }, receivedAt: Date.now() });
+    while (st.held.length > MAX_HELD_BATCHES)
+        st.held.shift();
+    if (st.holdTimer !== undefined)
+        return;
+    st.holdTimer = setInterval(() => {
+        void pumpHeld(st).catch((err) => logOf(st, `peers: held retry failed: ${err instanceof Error ? err.message : String(err)}`));
+    }, HOLD_POLL_MS);
+    st.holdTimer.unref?.();
+}
+/** Retry held batches oldest-first; drop each once it delivers or ages out. */
+async function pumpHeld(st) {
+    if (st.stopped || node !== st)
+        return;
+    for (const batch of [...st.held]) {
+        if (st.stopped || node !== st)
+            return;
+        node.inboundHop = batch.message.hop;
+        const res = await deliverInboundPeerMessage(batch.message, {
+            getCurrent: () => currentOf(),
+            getDraftText: () => {
+                try {
+                    const text = currentOf()?.ctx.ui.getEditorText?.() ?? '';
+                    return typeof text === 'string' ? text : '';
+                }
+                catch {
+                    return '';
+                }
+            },
+            receivedAt: batch.receivedAt,
+            wakes: st.wakes,
+        });
+        if (res.outcome !== 'held')
+            st.held = st.held.filter((b) => b !== batch);
+    }
+    if (st.held.length === 0 && st.holdTimer !== undefined) {
+        clearInterval(st.holdTimer);
+        st.holdTimer = undefined;
+    }
 }
 function warnOf(st, text) {
     try {
@@ -244,6 +286,8 @@ function ensureNode(pi, ctx) {
             claimed: new Set(),
             wakes: new Map(),
             inboundHop: undefined,
+            held: [],
+            holdTimer: undefined,
             current: { pi, ctx },
             server: undefined,
             stopBeat: undefined,
@@ -265,8 +309,19 @@ function ensureNode(pi, ctx) {
                         live.inboundHop = msg.hop;
                     const res = await deliverInboundPeerMessage(msg, {
                         getCurrent: () => currentOf(),
+                        getDraftText: () => {
+                            try {
+                                const text = currentOf()?.ctx.ui.getEditorText?.() ?? '';
+                                return typeof text === 'string' ? text : '';
+                            }
+                            catch {
+                                return '';
+                            }
+                        },
                         ...(live !== undefined ? { wakes: live.wakes } : {}),
                     });
+                    if (res.outcome === 'held' && live !== undefined)
+                        holdBatch(live, msg);
                     return res.outcome;
                 },
                 onWarn: (text) => {
@@ -307,6 +362,16 @@ async function stopNode(st) {
         // Shutdown never throws.
     }
     st.stopBeat = undefined;
+    if (st.holdTimer !== undefined) {
+        try {
+            clearInterval(st.holdTimer);
+        }
+        catch {
+            // Shutdown never throws.
+        }
+        st.holdTimer = undefined;
+    }
+    st.held = [];
     try {
         st.server?.stop();
     }
@@ -338,9 +403,9 @@ export default function peersExtension(pi) {
             catch {
                 // Snapshot stays last-good.
             }
-            return { ownName: st.name, mode: rosterMode(), peers: st.peers };
+            return { ownName: st.name, mode: rosterMode(), peers: st.peers, held: st.held.length };
         }
-        return { ownName: '', mode: rosterMode(), peers: [] };
+        return { ownName: '', mode: rosterMode(), peers: [], held: 0 };
     });
     // NOTE: `peer_send` registers UNCONDITIONALLY in every mode. The bridge may
     // bind a foreign registry copy on compiled hosts, making native `hub` refs

@@ -18,6 +18,12 @@
 /** Per-peer wakes allowed per rolling hour before excess queues as asides. */
 export const MAX_WAKES_PER_PEER_PER_HOUR = 20;
 export const WAKE_WINDOW_MS = 3_600_000;
+/** A batch held while the peer types waits at most this long before delivering anyway. */
+export const HOLD_TIMEOUT_MS = 120_000;
+/** Upper bound on batches waiting for the peer's composer to clear. */
+export const MAX_HELD_BATCHES = 20;
+/** How often a process retries its held batches. */
+export const HOLD_POLL_MS = 500;
 /** Every injection carries the `[peer <name>]` prefix plus a peer-not-user line. */
 export function formatPeerText(from, body, opts = {}) {
     return [
@@ -91,6 +97,22 @@ export async function deliverInboundPeerMessage(frame, deps) {
     if (typeof cur.pi.sendUserMessage !== 'function') {
         warn(cur.ctx, `peers: dropped a message from ${from} — the host has no sendUserMessage`);
         return { outcome: 'dropped', detail: 'no sendUserMessage on host' };
+    }
+    // Typing protection: injecting while idle runs the host prompt flow, which
+    // clears the peer's in-progress composer draft. While streaming the message
+    // rides the steer path, which leaves the draft alone — so hold only when
+    // delivery would wake. Bounded: an overstayed hold delivers anyway.
+    let draft = '';
+    try {
+        const read = deps.getDraftText?.() ?? '';
+        draft = typeof read === 'string' ? read : '';
+    }
+    catch {
+        draft = '';
+    }
+    const heldFor = deps.receivedAt === undefined ? 0 : Math.max(0, now - deps.receivedAt);
+    if (draft !== '' && willWake && heldFor < HOLD_TIMEOUT_MS) {
+        return { outcome: 'held', detail: 'peer is typing' };
     }
     try {
         cur.pi.sendUserMessage(text);

@@ -108,9 +108,9 @@ Then restart omp. Verify with `/peers` — you should see yourself listed.
 
 | Command / tool | What it does |
 |---|---|
-| `/peers` | List live instances: name · harness(pid) · cwd · model · busy/idle · beat age. Interactive picker in the TUI when available. Always renders a fresh beat. |
+| `/peers` | List live instances: name · harness(pid) · cwd · model · busy/idle · beat age. `held N` in the header while batches wait on your composer. Interactive picker in the TUI when available. Always renders a fresh beat. |
 | `/rename <name>` | The host's builtin session rename. The peer name follows automatically. Valid peer addresses: 1–24 chars of `a-z A-Z 0-9 _ . -`; anything else (spaces, auto-generated titles) keeps the default `<dir>-<pid>` name. |
-| `peer_send` (agent tool) | `to` (peer name, from `/peers`), `message`, optional `replyTo`. Injects a real prompt into the peer: steers mid-turn, wakes when idle. Fire-and-forget — replies arrive as peer messages. |
+| `peer_send` (agent tool) | `to` (peer name, from `/peers`), `message`, optional `replyTo`. Injects a real prompt into the peer: steers mid-turn, wakes when idle, holds while the peer is typing. Fire-and-forget — replies arrive as peer messages (`Held at <name> (typing)` while held). |
 | `<peers>` context note | Injected into every prompt: your own name, the no-contact-unless-asked rule, what a peer message looks like (`[peer <name>]:` — the peer, not your user), and every live peer. Solo prompts compact to own-name only. |
 
 Agents reply with `peer_send` too — every delivered message carries the exact reply line, so no tool discovery is needed on the far end.
@@ -121,6 +121,7 @@ Agents reply with `peer_send` too — every delivered message carries the exact 
 - **Relay cap.** Agent-to-agent relays carry a hop counter; chains more than 4 hops from a human prompt are refused with an explanation.
 - **Coalescing.** Bursts from one sender within 400 ms are delivered as a single message — one wake, not N.
 - **Wake budget.** 20 real wakes per peer per rolling hour; excess queues as non-interrupting asides instead of starting turns.
+- **Typing protection.** A message arriving while the peer is typing never wipes their composer draft: idle delivery holds (sender sees `Held`, `/peers` shows `held N`) and injects on submit, latest after 2 min; mid-turn steers still land immediately. Verify: A types without submitting, B sends (receipt `Held`), A submits (message injects, draft intact).
 - **Per-session boundaries.** Messages are injected as attributed text into the peer's own session; no tools execute across processes.
 
 ## How it works
