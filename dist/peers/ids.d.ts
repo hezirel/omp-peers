@@ -19,12 +19,16 @@ export declare function defaultPeerName(cwd: string, pid: number): string;
 /**
  * Derive a peer address from the host session name. A session name qualifies
  * as an address ONLY in raw form: non-empty and matching
- * {@link PEER_NAME_PATTERN} (1-24 of a-z A-Z 0-9 _ . -). Anything else —
- * spaces, model-written auto-titles — falls back to {@link defaultPeerName}
- * with `rejected` carrying the raw name so the caller can warn once.
- * Cross-process collisions still resolve later via {@link resolvePeerName}.
+ * {@link PEER_NAME_PATTERN} (1-24 of a-z A-Z 0-9 _ . -). Anything else falls
+ * back to {@link defaultPeerName} with `rejected` carrying the raw name so
+ * the caller can warn once — except model-generated titles (`titleSource`
+ * `"auto"`), which fall back silently: they express no user intent and the
+ * host rewrites them. Cross-process collisions still resolve later via
+ * {@link resolvePeerName}.
  */
-export declare function peerNameFromSession(raw: string | undefined, cwd: string, pid: number): {
+export declare function peerNameFromSession(raw: string | undefined, cwd: string, pid: number, opts?: {
+    titleSource?: string;
+}): {
     name: string;
     rejected?: string;
 };

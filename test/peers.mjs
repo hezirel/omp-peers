@@ -28,6 +28,7 @@ const {
   listLivePeers,
   removePeerRecord,
   peerNameFromSession,
+  readTitleSource,
   buildPeersNote,
   appendNoteToMessages,
   deliverInboundPeerMessage,
@@ -382,6 +383,27 @@ describe('peer identity: validation, collision, session-name adoption', () => {
     assert.deepEqual(peerNameFromSession(undefined, '/work/proj', 5), {
       name: defaultPeerName('/work/proj', 5),
     });
+  });
+
+  it('ignores model-generated auto-titles silently', () => {
+    assert.deepEqual(
+      peerNameFromSession('Can you contact peers independently', '/work/proj', 5, { titleSource: 'auto' }),
+      { name: defaultPeerName('/work/proj', 5) }
+    );
+    // Even a valid-looking auto-title never claims the address.
+    assert.deepEqual(peerNameFromSession('backend', '/work/proj', 5, { titleSource: 'auto' }), {
+      name: defaultPeerName('/work/proj', 5),
+    });
+    // Explicit user names keep legacy adopt-or-warn behavior.
+    assert.deepEqual(peerNameFromSession('backend', '/work/proj', 5, { titleSource: 'user' }), { name: 'backend' });
+    assert.equal(peerNameFromSession('My Agent', '/work/proj', 5, { titleSource: 'user' }).rejected, 'My Agent');
+  });
+
+  it('reads the title source from the header or the manager', () => {
+    assert.equal(readTitleSource(undefined), undefined);
+    assert.equal(readTitleSource({}), undefined);
+    assert.equal(readTitleSource({ getHeader: () => ({ title: 'x', titleSource: 'auto' }) }), 'auto');
+    assert.equal(readTitleSource({ titleSource: 'user' }), 'user');
   });
 });
 

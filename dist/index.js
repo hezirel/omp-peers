@@ -20,7 +20,7 @@ export { sendToPeer } from './peers/outbound.js';
 // Roster.
 export { buildPeersNote, appendNoteToMessages, } from './peers/roster.js';
 // Host seam.
-export { probeHost, discoverOwnAgentId, listLocalAgentIds, claimBridgedPeer, releaseBridgedPeer, peerActivityFor, SETTINGS_STUB, } from './peers/host.js';
+export { probeHost, discoverOwnAgentId, listLocalAgentIds, claimBridgedPeer, readTitleSource, releaseBridgedPeer, peerActivityFor, SETTINGS_STUB, } from './peers/host.js';
 // Commands (pure text formatters for tests/consumers).
 export { formatPeersText, formatPeerLine } from './commands/peers.js';
 // Agent tool surface (registered unconditionally in every mode).

@@ -14,6 +14,10 @@ export interface SessionManagerLike {
     getSessionId?: () => string | undefined;
     /** Host session title (omp `ReadonlySessionManager.getSessionName`). */
     getSessionName?: () => string | undefined;
+    /** Session header (omp `ReadonlySessionManager.getHeader`) — carries `titleSource`. */
+    getHeader?: () => unknown;
+    /** Title source on hosts exposing the full manager (`"user"` | `"auto"`). */
+    titleSource?: unknown;
 }
 export interface SelectOption {
     label: string;
@@ -155,6 +159,14 @@ export declare function discoverOwnAgentId(registry: RegistryLike, ctx: CommandC
  * live subagent address during peer-name deconfliction.
  */
 export declare function listLocalAgentIds(registry: RegistryLike): string[];
+/**
+ * Who named this session. The host marks explicit renames `"user"` and
+ * model-generated titles `"auto"` on the session header (on-contract via
+ * `ReadonlySessionManager.getHeader`) and on the manager itself (structural —
+ * the runtime object is the full SessionManager). Returns undefined when the
+ * host exposes neither; callers keep legacy adopt-or-warn behavior.
+ */
+export declare function readTitleSource(manager: SessionManagerLike | undefined | null): string | undefined;
 export declare function peerActivityFor(record: PeerRecord): string;
 export type PeerRequestFn = (socket: string, frame: {
     t: 'msg';

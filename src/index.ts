@@ -98,6 +98,7 @@ export {
   discoverOwnAgentId,
   listLocalAgentIds,
   claimBridgedPeer,
+  readTitleSource,
   releaseBridgedPeer,
   peerActivityFor,
   SETTINGS_STUB,

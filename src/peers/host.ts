@@ -16,6 +16,10 @@ export interface SessionManagerLike {
   getSessionId?: () => string | undefined;
   /** Host session title (omp `ReadonlySessionManager.getSessionName`). */
   getSessionName?: () => string | undefined;
+  /** Session header (omp `ReadonlySessionManager.getHeader`) — carries `titleSource`. */
+  getHeader?: () => unknown;
+  /** Title source on hosts exposing the full manager (`"user"` | `"auto"`). */
+  titleSource?: unknown;
 }
 
 export interface SelectOption {
@@ -239,6 +243,34 @@ export function listLocalAgentIds(registry: RegistryLike): string[] {
     ids.push(ref.id);
   }
   return ids;
+}
+
+/**
+ * Who named this session. The host marks explicit renames `"user"` and
+ * model-generated titles `"auto"` on the session header (on-contract via
+ * `ReadonlySessionManager.getHeader`) and on the manager itself (structural —
+ * the runtime object is the full SessionManager). Returns undefined when the
+ * host exposes neither; callers keep legacy adopt-or-warn behavior.
+ */
+export function readTitleSource(manager: SessionManagerLike | undefined | null): string | undefined {
+  if (manager === undefined || manager === null) return undefined;
+  // Header first (on-contract), then the manager itself (structural) — first
+  // non-empty string wins. Every read is guarded: unknown host shapes fall
+  // through to undefined and callers keep legacy adopt-or-warn behavior.
+  const candidates: unknown[] = [];
+  try {
+    candidates.push(manager.getHeader?.());
+  } catch {
+    // Header read is best-effort.
+  }
+  candidates.push(manager);
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    if (!('titleSource' in candidate)) continue;
+    const source: unknown = candidate.titleSource;
+    if (typeof source === 'string' && source !== '') return source;
+  }
+  return undefined;
 }
 
 export function peerActivityFor(record: PeerRecord): string {

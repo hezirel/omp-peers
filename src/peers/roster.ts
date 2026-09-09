@@ -45,7 +45,7 @@ export function buildPeersNote(
       ? '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. Native `hub` op=send is best-effort only.'
       : '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message.';
   const naming =
-    'Names are session names (`/rename <name>`); valid 1-24 [a-zA-Z0-9_.-], else `<dir>-<pid>`.';
+    'Names are session names (`/rename <name>`); valid 1-24 [a-zA-Z0-9_.-], else `<dir>-<pid>`. Auto-titles never qualify — `/rename` to claim an address.';
   return [`<peers>`, `You are \`${ownName}\`. ${contact}`, what, how, naming, '', rows, `</peers>`].join('\n');
 }
 

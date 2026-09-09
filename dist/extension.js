@@ -20,7 +20,7 @@
  * `sessionManager.getSessionId()`.
  */
 import { registerPeersCommand } from './commands/peers.js';
-import { bridgeResolvesHost, claimBridgedPeer, listLocalAgentIds, probeHost, releaseBridgedPeer, } from './peers/host.js';
+import { bridgeResolvesHost, claimBridgedPeer, listLocalAgentIds, probeHost, readTitleSource, releaseBridgedPeer, } from './peers/host.js';
 import { defaultPeerName, isValidPeerName, peerNameFromSession, resolvePeerName } from './peers/ids.js';
 import { deliverInboundPeerMessage } from './peers/inbound.js';
 import { sendToPeer } from './peers/outbound.js';
@@ -102,7 +102,12 @@ async function tick(st) {
             sessionName = undefined;
         }
     }
-    const derived = peerNameFromSession(sessionName, cwd, st.pid);
+    // The host marks model-generated titles `"auto"`: those are never peer
+    // addresses (no user intent, rewritten on replan) — peerNameFromSession
+    // falls back to the default silently instead of warning.
+    const derived = peerNameFromSession(sessionName, cwd, st.pid, {
+        titleSource: readTitleSource(ctx?.sessionManager),
+    });
     if (derived.rejected !== undefined && derived.rejected !== st.lastRejectedSessionName) {
         const first = st.lastRejectedSessionName === undefined;
         st.lastRejectedSessionName = derived.rejected;
@@ -395,7 +400,9 @@ export default function peersExtension(pi) {
         catch {
             sessionName = undefined;
         }
-        if (sessionName !== undefined && isValidPeerName(sessionName)) {
+        // Auto-titles never claim the peer name, even valid-looking ones: the
+        // host rewrites them, which would flap the address mid-life.
+        if (sessionName !== undefined && isValidPeerName(sessionName) && readTitleSource(ctx?.sessionManager) !== 'auto') {
             const others = st.peers.filter((p) => p.pid !== st.pid);
             let localIds = [];
             if (BRIDGE !== undefined) {

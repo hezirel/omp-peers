@@ -13,7 +13,7 @@ export { MAX_HOPS, COALESCE_MS, PEER_REQUEST_TIMEOUT_MS, SOCKET_IDLE_MS, MAX_FRA
 export { deliverInboundPeerMessage, formatPeerText, isWakeOverBudget, recordPeerWake, MAX_WAKES_PER_PEER_PER_HOUR, WAKE_WINDOW_MS, type InboundCarrier, type CurrentHost, type InboundOutcome, type InboundDeps, } from './peers/inbound.js';
 export { sendToPeer, type OutboundDeps } from './peers/outbound.js';
 export { buildPeersNote, appendNoteToMessages, type RosterMode, type RosterMessage, } from './peers/roster.js';
-export { probeHost, discoverOwnAgentId, listLocalAgentIds, claimBridgedPeer, releaseBridgedPeer, peerActivityFor, SETTINGS_STUB, type HostProbe, type HubBridge, type RegistryLike, type RegistryRefLike, type ExecuteSendFn, type PeerRequestFn, type CommandContextLike, type ExtensionHostLike, type UiLike, type SelectOption, } from './peers/host.js';
+export { probeHost, discoverOwnAgentId, listLocalAgentIds, claimBridgedPeer, readTitleSource, releaseBridgedPeer, peerActivityFor, SETTINGS_STUB, type HostProbe, type HubBridge, type RegistryLike, type RegistryRefLike, type ExecuteSendFn, type PeerRequestFn, type CommandContextLike, type ExtensionHostLike, type UiLike, type SelectOption, } from './peers/host.js';
 export { formatPeersText, formatPeerLine, type PeersSnapshot } from './commands/peers.js';
 export { registerPeerSendTool, type PeerSendDeps } from './tools.js';
 export * from './errors.js';

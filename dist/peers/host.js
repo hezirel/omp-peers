@@ -130,6 +130,38 @@ export function listLocalAgentIds(registry) {
     }
     return ids;
 }
+/**
+ * Who named this session. The host marks explicit renames `"user"` and
+ * model-generated titles `"auto"` on the session header (on-contract via
+ * `ReadonlySessionManager.getHeader`) and on the manager itself (structural —
+ * the runtime object is the full SessionManager). Returns undefined when the
+ * host exposes neither; callers keep legacy adopt-or-warn behavior.
+ */
+export function readTitleSource(manager) {
+    if (manager === undefined || manager === null)
+        return undefined;
+    // Header first (on-contract), then the manager itself (structural) — first
+    // non-empty string wins. Every read is guarded: unknown host shapes fall
+    // through to undefined and callers keep legacy adopt-or-warn behavior.
+    const candidates = [];
+    try {
+        candidates.push(manager.getHeader?.());
+    }
+    catch {
+        // Header read is best-effort.
+    }
+    candidates.push(manager);
+    for (const candidate of candidates) {
+        if (typeof candidate !== 'object' || candidate === null)
+            continue;
+        if (!('titleSource' in candidate))
+            continue;
+        const source = candidate.titleSource;
+        if (typeof source === 'string' && source !== '')
+            return source;
+    }
+    return undefined;
+}
 export function peerActivityFor(record) {
     return `${record.harness} instance pid ${record.pid} in ${record.cwd}${record.busy ? ' (working)' : ''}`;
 }
