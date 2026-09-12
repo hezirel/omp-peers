@@ -29,8 +29,8 @@ export function buildPeersNote(ownName, peers, mode) {
     if (peers.length === 0)
         return [`<peers>`, `You are \`${ownName}\`. No other peers are live right now.`, `</peers>`].join('\n');
     const how = mode === 'hub'
-        ? '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. Native `hub` op=send is best-effort only. `peer_status`, `peer_todo`, and `peer_request` are available agent tools.'
-        : '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. `peer_status`, `peer_todo`, and `peer_request` are available agent tools.';
+        ? '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. Native `hub` op=send is best-effort only. `peer_status` and `peer_request` are available agent tools.'
+        : '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. `peer_status` and `peer_request` are available agent tools.';
     const naming = 'Names are session names (`/rename <name>`); valid 1-24 [a-zA-Z0-9_.-], else `<dir>-<pid>`. Auto-titles never qualify — `/rename` to claim an address.';
     return [`<peers>`, `You are \`${ownName}\`. ${contact}`, what, how, naming, '', rows, `</peers>`].join('\n');
 }

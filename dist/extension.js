@@ -20,24 +20,30 @@
  * `sessionManager.getSessionId()`.
  */
 import { registerPeersCommand } from './commands/peers.js';
-import { bridgeResolvesHost, claimBridgedPeer, listLocalAgentIds, peerActivityFor, probeHost, readTitleSource, releaseBridgedPeer, } from './peers/host.js';
+import { bridgeResolvesHost, claimBridgedPeer, listLocalAgentIds, peerActivityFor, probeHost, readNativeTodos, readTitleSource, releaseBridgedPeer, } from './peers/host.js';
 import { defaultPeerName, isValidPeerName, peerNameFromSession, resolvePeerName } from './peers/ids.js';
 import { deliverInboundPeerMessage, HOLD_POLL_MS, MAX_HELD_BATCHES } from './peers/inbound.js';
-import { sendToPeer } from './peers/outbound.js';
+import { outboundHop, sendToPeer } from './peers/outbound.js';
 import { HEARTBEAT_MS, listLivePeers, removePeerRecord, startPresenceBeat, writePeerBeat, } from './peers/presence.js';
 import { appendNoteToMessages, buildPeersNote } from './peers/roster.js';
 import { peerSocketAddress, requestPeer, startPeerServer } from './peers/server.js';
 import { ensureStateDirs, resolveStateDir } from './store/paths.js';
-import { registerPeerSendTool, registerPeerStatusTool, registerPeerTodoTool, registerPeerRequestTool } from './tools.js';
+import { registerPeerSendTool, registerPeerStatusTool, registerPeerRequestTool } from './tools.js';
 /** Module-scope host probe: caches MODULE handles only, never sessions. */
 const probe = await probeHost();
 const HARNESS = probe.kind === 'hub-bridge' ? 'omp' : 'pi';
 const MODE = probe.kind === 'hub-bridge' ? 'hub' : 'tools';
 const BRIDGE = probe.kind === 'hub-bridge' ? probe.bridge : undefined;
+/** How long a started tool keeps naming the peer's activity before busy/idle takes over. */
+const ACTIVITY_FRESH_MS = 120_000;
 /** One node per process, even when several sessions load the extension. */
 let node;
+/** The live node for this process, if one is running. */
+function liveNode() {
+    return node !== undefined && !node.stopped ? node : undefined;
+}
 function currentOf() {
-    return node?.stopped === false ? node.current : undefined;
+    return liveNode()?.current;
 }
 /** Stash a held batch (bounded) and ensure the retry poller runs. */
 function holdBatch(st, msg) {
@@ -81,7 +87,8 @@ async function pumpHeld(st) {
         // Only a real delivery advances the relay chain — 'held'/'dropped'/'aside'
         // never reached the agent, so they must not consume a hop.
         if (res.outcome === 'woken' || res.outcome === 'injected') {
-            st.inboundHop = batch.message.hop;
+            st.lastInboundPeer = batch.message.from;
+            st.lastInboundHop = batch.message.hop;
         }
         if (res.outcome !== 'held')
             st.held = st.held.filter((b) => b !== batch);
@@ -197,6 +204,13 @@ async function tick(st) {
         localIds,
     });
     st.sessionId = sessionId;
+    st.nativeTodos = readNativeTodos(st.current?.ctx.sessionManager);
+    const lastActivity = st.nativeActivity;
+    const activity = lastActivity !== undefined && Date.now() - lastActivity.at <= ACTIVITY_FRESH_MS
+        ? lastActivity.text
+        : busy
+            ? 'working'
+            : undefined;
     let own;
     try {
         own = await writePeerBeat({
@@ -210,8 +224,8 @@ async function tick(st) {
             socket: st.socketAddress,
             startedAt: st.startedAt,
             busy,
-            ...(st.activity !== undefined && st.activity !== '' ? { activity: st.activity } : {}),
-            ...(st.todos.length > 0 ? { todos: st.todos } : {}),
+            ...(activity !== undefined && activity !== '' ? { activity } : {}),
+            ...(st.nativeTodos.length > 0 ? { todos: st.nativeTodos } : {}),
         });
     }
     catch (err) {
@@ -235,7 +249,7 @@ function syncBridge(st, others) {
     for (const record of others) {
         seen.add(record.name);
         if (!st.claimed.has(record.name)) {
-            const ok = claimBridgedPeer(BRIDGE, record, st.name, () => (st.inboundHop === undefined ? 0 : st.inboundHop + 1), (socket, frame) => requestPeer(socket, frame), (text) => {
+            const ok = claimBridgedPeer(BRIDGE, record, st.name, () => outboundHop(st, record.name, false), (socket, frame) => requestPeer(socket, frame), (text) => {
                 // A persistent name collision would re-warn every tick — once per
                 // name is enough; the entry clears if the claim later succeeds.
                 if (st.claimWarned.has(record.name))
@@ -287,8 +301,9 @@ function armBeatTimer(st, ctx) {
 }
 /** Get the live node, starting one if this process has none. Re-arms on every event. */
 function ensureNode(pi, ctx) {
-    if (node !== undefined && !node.stopped) {
-        node.current = { pi, ctx };
+    const existing = liveNode();
+    if (existing !== undefined) {
+        existing.current = { pi, ctx };
         let sessionId = '';
         try {
             sessionId = ctx.sessionManager?.getSessionId?.() ?? '';
@@ -296,9 +311,9 @@ function ensureNode(pi, ctx) {
         catch {
             sessionId = '';
         }
-        if (sessionId !== '' && sessionId !== node.sessionId)
-            armBeatTimer(node, ctx);
-        return node;
+        if (sessionId !== '' && sessionId !== existing.sessionId)
+            armBeatTimer(existing, ctx);
+        return existing;
     }
     try {
         const stateDir = resolveStateDir();
@@ -313,7 +328,8 @@ function ensureNode(pi, ctx) {
             claimed: new Set(),
             claimWarned: new Set(),
             wakes: new Map(),
-            inboundHop: undefined,
+            lastInboundPeer: undefined,
+            lastInboundHop: 0,
             held: [],
             holdTimer: undefined,
             current: { pi, ctx },
@@ -321,8 +337,8 @@ function ensureNode(pi, ctx) {
             stopBeat: undefined,
             lastRejectedSessionName: undefined,
             stopped: false,
-            activity: undefined,
-            todos: [],
+            nativeTodos: [],
+            nativeActivity: undefined,
             pendingReplies: new Map(),
         };
         st.name = defaultPeerName(typeof ctx.cwd === 'string' && ctx.cwd !== '' ? ctx.cwd : process.cwd(), st.pid);
@@ -333,9 +349,9 @@ function ensureNode(pi, ctx) {
                 return;
             st.server = startPeerServer({
                 address: st.socketAddress,
-                ownName: () => (node !== undefined && !node.stopped ? node.name : ''),
+                ownName: () => liveNode()?.name ?? '',
                 onMessage: async (msg) => {
-                    const live = node !== undefined && !node.stopped ? node : undefined;
+                    const live = liveNode();
                     if (live !== undefined &&
                         msg.replyTo !== undefined &&
                         msg.replyTo !== '' &&
@@ -344,7 +360,8 @@ function ensureNode(pi, ctx) {
                         live.pendingReplies.delete(msg.replyTo);
                         clearTimeout(entry.timer);
                         entry.resolve(msg.body);
-                        live.inboundHop = msg.hop;
+                        live.lastInboundPeer = msg.from;
+                        live.lastInboundHop = msg.hop;
                         return 'replied';
                     }
                     const res = await deliverInboundPeerMessage(msg, {
@@ -363,15 +380,17 @@ function ensureNode(pi, ctx) {
                     // Only a real delivery advances the relay chain — 'held'/'dropped'/
                     // 'aside' never reached the agent, so they must not consume a hop.
                     if ((res.outcome === 'woken' || res.outcome === 'injected') && live !== undefined) {
-                        live.inboundHop = msg.hop;
+                        live.lastInboundPeer = msg.from;
+                        live.lastInboundHop = msg.hop;
                     }
                     if (res.outcome === 'held' && live !== undefined)
                         holdBatch(live, msg);
                     return res.outcome;
                 },
                 onWarn: (text) => {
-                    if (node !== undefined && !node.stopped)
-                        warnOf(node, text);
+                    const live = liveNode();
+                    if (live !== undefined)
+                        warnOf(live, text);
                 },
             });
             armBeatTimer(st, ctx);
@@ -403,7 +422,10 @@ async function stopNode(st) {
     // A successor node for this same pid may already exist (session_switch →
     // ensureNode after `node` was cleared). When it does, this teardown must
     // not delete the successor's live record or socket file.
-    const hasSuccessor = () => node !== undefined && node !== st && !node.stopped;
+    const hasSuccessor = () => {
+        const successor = liveNode();
+        return successor !== undefined && successor !== st;
+    };
     try {
         st.stopBeat?.();
     }
@@ -453,7 +475,7 @@ async function stopNode(st) {
 }
 export default function peersExtension(pi) {
     registerPeersCommand(pi, async () => {
-        const st = node !== undefined && !node.stopped ? node : undefined;
+        const st = liveNode();
         if (st !== undefined) {
             // Fresh beat before rendering: a just-run /rename must be visible
             // immediately, not on the next 15s tick. tick() owns its failures.
@@ -473,10 +495,11 @@ export default function peersExtension(pi) {
     // guaranteed reply path in ALL modes.
     registerPeerSendTool(pi, {
         send: (to, message, replyTo) => {
-            const st = node !== undefined && !node.stopped ? node : undefined;
+            const st = liveNode();
             return sendToPeer(to, message, {
                 ownName: st?.name ?? '',
-                hop: st?.inboundHop === undefined ? 0 : st.inboundHop + 1,
+                ...(st !== undefined ? { state: st } : {}),
+                isReply: replyTo !== undefined,
                 // st.peers includes our own record — filter by pid so a stale own
                 // name (post-/rename) can't route a send back to ourselves.
                 listPeers: async () => (st?.peers ?? []).filter((p) => p.pid !== st?.pid),
@@ -490,48 +513,26 @@ export default function peersExtension(pi) {
     });
     registerPeerStatusTool(pi, {
         listPeers: async () => {
-            const st = node !== undefined && !node.stopped ? node : undefined;
+            const st = liveNode();
             if (st === undefined)
                 return [];
             return listLivePeers(st.stateDir, st.pid).then((ps) => ps.filter((p) => p.pid !== st.pid));
         },
     });
-    registerPeerTodoTool(pi, {
-        get: () => {
-            const st = node !== undefined && !node.stopped ? node : undefined;
-            if (st === undefined)
-                return undefined;
-            return { name: st.name, activity: st.activity, todos: st.todos };
-        },
-        set: (opts) => {
-            const st = node !== undefined && !node.stopped ? node : undefined;
-            if (st === undefined)
-                return;
-            if ('activity' in opts)
-                st.activity = opts.activity;
-            if ('todos' in opts)
-                st.todos = opts.todos ?? [];
-        },
-        tick: async () => {
-            const st = node !== undefined && !node.stopped ? node : undefined;
-            if (st !== undefined)
-                await tick(st);
-        },
-    });
     registerPeerRequestTool(pi, {
-        ownName: () => (node !== undefined && !node.stopped ? node.name : ''),
-        getHop: () => {
-            const st = node !== undefined && !node.stopped ? node : undefined;
-            return st?.inboundHop === undefined ? 0 : st.inboundHop + 1;
+        ownName: () => liveNode()?.name ?? '',
+        getHop: (to) => {
+            const st = liveNode();
+            return st === undefined ? 0 : outboundHop(st, to, false);
         },
         listPeers: async () => {
-            const st = node !== undefined && !node.stopped ? node : undefined;
+            const st = liveNode();
             if (st === undefined)
                 return [];
             return (st.peers ?? []).filter((p) => p.pid !== st.pid);
         },
         send: (to, message, outDeps) => {
-            const st = node !== undefined && !node.stopped ? node : undefined;
+            const st = liveNode();
             return sendToPeer(to, message, {
                 ...outDeps,
                 ...(st !== undefined
@@ -539,7 +540,7 @@ export default function peersExtension(pi) {
                     : {}),
             });
         },
-        getPendingReplies: () => (node !== undefined && !node.stopped ? node.pendingReplies : undefined),
+        getPendingReplies: () => liveNode()?.pendingReplies,
     });
     pi.on('session_start', (_event, ctx) => {
         ensureNode(pi, ctx);
@@ -562,21 +563,65 @@ export default function peersExtension(pi) {
         // A human prompt ends any relay chain: the next send starts at hop 0.
         // (No re-beat here: the context handler builds the roster from the last
         // good tick, so an async beat could never land in time for this prompt.)
-        if (node !== undefined && !node.stopped)
-            node.inboundHop = undefined;
+        const live = liveNode();
+        if (live !== undefined) {
+            live.lastInboundPeer = undefined;
+            live.lastInboundHop = 0;
+        }
     });
     // `input` only fires for interactive TTY submits — on rpc/print/headless
     // hosts it never runs, so `before_agent_start` (emitted by the agent loop
-    // in every mode) is the reset that keeps inboundHop from sticking forever.
-    // Peer injections are identified by the `[peer <name>]` prefix
+    // in every mode) is the reset that keeps the hop state from sticking
+    // forever. Peer injections are identified by the `[peer <name>]` prefix
     // formatPeerText stamps on every delivery; a human prompt that happens to
     // start with `[peer ` won't reset — conservative direction, acceptable.
     pi.on('before_agent_start', (event) => {
         const prompt = event?.prompt;
         if (typeof prompt === 'string' && prompt.startsWith('[peer '))
             return;
-        if (node !== undefined && !node.stopped)
-            node.inboundHop = undefined;
+        const live = liveNode();
+        if (live !== undefined) {
+            live.lastInboundPeer = undefined;
+            live.lastInboundHop = 0;
+        }
+    });
+    // Activity is never synchronous on ctx, so it is captured from the agent's
+    // own tool events: a started tool names what the peer is doing right now,
+    // and its end clears the name (busy/idle still describes the turn).
+    pi.on('tool_execution_start', (event) => {
+        const st = liveNode();
+        if (st === undefined)
+            return;
+        const payload = event;
+        const toolName = typeof payload?.toolName === 'string' ? payload.toolName : '';
+        const intent = typeof payload?.intent === 'string' ? payload.intent.trim() : '';
+        const text = intent !== '' ? intent : toolName;
+        if (text === '')
+            return;
+        st.nativeActivity = { text, at: Date.now() };
+    });
+    pi.on('tool_execution_end', (event) => {
+        const st = liveNode();
+        if (st !== undefined) {
+            st.nativeActivity = undefined;
+            // A todo flip must land before the next 15s beat, not after it.
+            if (event?.toolName === 'todo') {
+                void tick(st).catch((err) => logOf(st, `peers: tick failed: ${err instanceof Error ? err.message : String(err)}`));
+            }
+        }
+    });
+    pi.on('agent_end', () => {
+        const st = liveNode();
+        if (st !== undefined)
+            st.nativeActivity = undefined;
+    });
+    // The reminder fires after the turn's todos came back unfinished; the beat
+    // that follows must carry the fresh phases.
+    pi.on('todo_reminder', () => {
+        const st = liveNode();
+        if (st === undefined)
+            return;
+        void tick(st).catch((err) => logOf(st, `peers: tick failed: ${err instanceof Error ? err.message : String(err)}`));
     });
     pi.on('context', (event, ctx) => {
         const st = ensureNode(pi, ctx);

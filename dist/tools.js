@@ -1,12 +1,13 @@
 /**
- * Agent tool surface: `peer_send` plus activity/todo and request/reply tools.
+ * Agent tool surface: `peer_send`, `peer_status`, and `peer_request`.
  *
  * Registered UNCONDITIONALLY in every mode: on omp hosts the bridge carries
  * peers as native `hub` refs, but those are best-effort (the bridge may bind
  * a foreign registry copy on compiled hosts), so `peer_send {to, message,
- * replyTo?}` is THE guaranteed agent path everywhere. The new `peer_status`,
- * `peer_todo`, and `peer_request` tools ride the same socket + heartbeat
- * surface. Explicit names only — `to:"all"` is refused.
+ * replyTo?}` is THE guaranteed agent path everywhere. `peer_status` reads the
+ * heartbeat, which mirrors each peer's NATIVE todo list and current activity —
+ * there is no peer-owned todo to maintain. Explicit names only — `to:"all"`
+ * is refused.
  */
 import { randomUUID } from 'node:crypto';
 import { formatBeatAge } from './peers/presence.js';
@@ -40,11 +41,52 @@ export function registerPeerSendTool(pi, deps) {
         },
     });
 }
+/** Checklist box for one native/legacy todo status. */
+function todoBox(status) {
+    switch (status) {
+        case 'completed':
+        case 'done':
+            return '[x]';
+        case 'in_progress':
+        case 'doing':
+            return '[~]';
+        case 'blocked':
+            return '[!]';
+        case 'abandoned':
+            return '[-]';
+        default:
+            return '[ ]';
+    }
+}
+function todoLine(todo) {
+    const blocker = todo.status === 'blocked' && todo.blocker ? ` — ${todo.blocker}` : '';
+    return `- ${todoBox(todo.status)} ${todo.text}${blocker}`;
+}
+/** Native phases render as headers; todos without one stay flat. */
+function renderTodos(todos) {
+    const lines = [`Todos (${todos.length}):`];
+    const groups = new Map();
+    for (const todo of todos) {
+        const phase = todo.phase ?? '';
+        const group = groups.get(phase);
+        if (group === undefined)
+            groups.set(phase, [todo]);
+        else
+            group.push(todo);
+    }
+    for (const [phase, group] of groups) {
+        if (phase !== '')
+            lines.push(`Phase: ${phase}`);
+        for (const todo of group)
+            lines.push(todoLine(todo));
+    }
+    return lines;
+}
 export function registerPeerStatusTool(pi, deps) {
     pi.registerTool({
         name: 'peer_status',
         label: 'Peer Status',
-        description: 'Check what another live peer is doing: busy/idle, current activity, todos, and last heartbeat age. `to` is the peer name from `/peers`.',
+        description: "Check what another live peer is doing: busy/idle, current activity, its native todo list (grouped by phase, newest state), and last heartbeat age. `to` is the peer name from `/peers`.",
         parameters: {
             type: 'object',
             properties: {
@@ -69,11 +111,7 @@ export function registerPeerStatusTool(pi, deps) {
                     `Activity: ${peer.activity ?? '—'}`,
                 ];
                 if (peer.todos !== undefined && peer.todos.length > 0) {
-                    lines.push(`Todos (${peer.todos.length}):`);
-                    for (const todo of peer.todos) {
-                        const box = todo.status === 'done' ? '[x]' : todo.status === 'doing' ? '[-]' : '[ ]';
-                        lines.push(`- ${box} ${todo.text}`);
-                    }
+                    lines.push(...renderTodos(peer.todos));
                 }
                 else {
                     lines.push('Todos: none');
@@ -82,107 +120,6 @@ export function registerPeerStatusTool(pi, deps) {
             }
             catch (err) {
                 return { content: [{ type: 'text', text: `peer_status failed: ${err instanceof Error ? err.message : String(err)}` }] };
-            }
-        },
-    });
-}
-const MAX_ACTIVITY_CHARS = 200;
-const MAX_TODOS = 20;
-const MAX_TODO_TEXT_CHARS = 200;
-function clampString(value, max) {
-    const s = typeof value === 'string' ? value : '';
-    return s.length > max ? s.slice(0, max) : s;
-}
-function normalizeTodos(raw) {
-    if (!Array.isArray(raw))
-        return [];
-    const out = [];
-    for (const item of raw) {
-        if (typeof item === 'string') {
-            out.push({ text: clampString(item, MAX_TODO_TEXT_CHARS), status: 'pending' });
-            continue;
-        }
-        if (typeof item === 'object' && item !== null && 'text' in item) {
-            const t = item;
-            const id = typeof t['id'] === 'string' ? t['id'] : undefined;
-            const text = clampString(t['text'], MAX_TODO_TEXT_CHARS);
-            const status = t['status'] === 'pending' || t['status'] === 'doing' || t['status'] === 'done'
-                ? t['status']
-                : undefined;
-            if (text !== '')
-                out.push({ ...(id !== undefined ? { id } : {}), text, status });
-        }
-    }
-    return out.slice(0, MAX_TODOS);
-}
-export function registerPeerTodoTool(pi, deps) {
-    pi.registerTool({
-        name: 'peer_todo',
-        label: 'Peer Todo',
-        description: 'Publish or update your own activity and todo list so other peers can see it. `action` is `set` (replace), `add` (append), or `clear` (remove all). `activity` is a short string; `todos` is an array of strings or `{text, status?}` objects. Values are clamped (200 chars for activity and each todo, 20 todos max).',
-        parameters: {
-            type: 'object',
-            properties: {
-                action: { type: 'string', enum: ['set', 'add', 'clear'], description: 'Whether to set, append, or clear the todo list' },
-                activity: { type: 'string', description: 'Short activity description' },
-                todos: {
-                    type: 'array',
-                    description: 'Todo items to set or add',
-                    items: {
-                        oneOf: [
-                            { type: 'string', description: 'Todo text (defaults to pending)' },
-                            {
-                                type: 'object',
-                                properties: {
-                                    id: { type: 'string' },
-                                    text: { type: 'string' },
-                                    status: { type: 'string', enum: ['pending', 'doing', 'done'] },
-                                },
-                                required: ['text'],
-                                additionalProperties: false,
-                            },
-                        ],
-                    },
-                },
-            },
-            required: ['action'],
-            additionalProperties: false,
-        },
-        execute: async (_toolCallId, params) => {
-            try {
-                const action = typeof params['action'] === 'string' ? params['action'] : '';
-                if (action !== 'set' && action !== 'add' && action !== 'clear') {
-                    return { content: [{ type: 'text', text: 'action must be set, add, or clear.' }] };
-                }
-                const state = deps.get();
-                if (state === undefined)
-                    return { content: [{ type: 'text', text: 'peers not started.' }] };
-                const setOpts = {};
-                if ('activity' in params) {
-                    const raw = params['activity'];
-                    const s = typeof raw === 'string' ? raw.trim() : '';
-                    setOpts.activity = s === '' ? undefined : clampString(s, MAX_ACTIVITY_CHARS);
-                }
-                if (action === 'clear') {
-                    setOpts.todos = [];
-                }
-                else if ('todos' in params) {
-                    const incoming = normalizeTodos(params['todos']);
-                    if (action === 'add') {
-                        setOpts.todos = [...state.todos, ...incoming].slice(0, MAX_TODOS);
-                    }
-                    else {
-                        setOpts.todos = incoming;
-                    }
-                }
-                deps.set(setOpts);
-                await deps.tick();
-                const updated = deps.get();
-                const summary = `peer_todo: ${updated?.name ?? state.name} · ${updated?.activity ? `activity "${updated.activity}"` : 'no activity'} · ${updated?.todos?.length ?? 0} todo${(updated?.todos?.length ?? 0) === 1 ? '' : 's'}.`;
-                return { content: [{ type: 'text', text: summary }] };
-            }
-            catch (err) {
-                return { content: [{ type: 'text', text: `peer_todo failed: ${err instanceof Error ? err.message : String(err)}` }] };
             }
         },
     });
@@ -245,7 +182,8 @@ export function registerPeerRequestTool(pi, deps) {
             try {
                 const receipt = await deps.send(to, message, {
                     ownName: deps.ownName(),
-                    hop: deps.getHop(),
+                    hop: deps.getHop(to),
+                    isReply: false,
                     listPeers: deps.listPeers,
                     replyTo,
                 });

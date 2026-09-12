@@ -8,8 +8,35 @@
 import { MAX_HOPS, requestPeer } from './server.js';
 import type { PeerRecord } from '../types.js';
 
+/** Hop accounting state: where this node's last real inbound delivery came from. */
+export interface HopState {
+  lastInboundPeer: string | undefined;
+  lastInboundHop: number;
+}
+
+/**
+ * The hop an outbound send from `st` must carry.
+ *
+ * A single hop counter per node cannot tell a relay from a conversation: every
+ * send would advance the chain, so an orchestrator<->agent request/reply round
+ * trip hit the cap after a few rounds. Tracking the last inbound peer instead
+ * keeps a conversation (or a reply) at the depth it arrived — only relaying to
+ * a DIFFERENT peer advances the chain. Nothing received since the last human
+ * prompt means a fresh chain: hop 0.
+ */
+export function outboundHop(st: HopState, to: string, isReply: boolean): number {
+  if (st.lastInboundPeer === undefined) return 0;
+  if (isReply || to === st.lastInboundPeer) return st.lastInboundHop;
+  return st.lastInboundHop + 1;
+}
+
 export interface OutboundDeps {
   ownName: string;
+  /** Live per-node hop state; when present the hop is derived via {@link outboundHop}. */
+  state?: HopState;
+  /** True when this send answers the last inbound message (never advances the chain). */
+  isReply?: boolean;
+  /** Explicit hop override — wins over `state`. */
   hop?: number;
   replyTo?: string;
   listPeers: () => Promise<PeerRecord[]>;
@@ -27,7 +54,8 @@ export async function sendToPeer(
   if (name === '' || body === '') return 'Both `to` and `message` are required.';
   if (name === 'all') return 'Broadcasts are not supported in v1 — address one peer by name (see `/peers`).';
   if (name === deps.ownName) return 'Cannot send a message to yourself.';
-  const hop = deps.hop ?? 0;
+  const hop =
+    deps.hop ?? (deps.state !== undefined ? outboundHop(deps.state, name, deps.isReply === true) : 0);
   // Same refusal the server would send — checked locally so an over-limit
   // chain never costs a socket round-trip.
   if (hop > MAX_HOPS) {

@@ -8,7 +8,11 @@
  * followUps (deliverAs 'followUp' — queued, never waking); bridgeless hosts
  * still deliver; empty frames, missing contexts, and sendUserMessage
  * rejections drop without touching the host; hop-cap refusal both locally
- * (before any socket I/O) and server-side; burst coalescing is per sender —
+ * (before any socket I/O) and server-side; conversation-aware hop accounting
+ * (a request/reply round trip stays level, a relay advances, a human prompt
+ * resets); the native todo mapping (user_todo_edit vs todo toolResult,
+ * newest-wins, ignored non-todo/error results, clamps) and its peer_status
+ * rendering; burst coalescing is per sender —
  * concurrent senders stay separate batches and a coalesced hop takes
  * Math.max; UTF-8 frames split mid-character still decode intact;
  * session-name adoption (`peerNameFromSession`, incl. the refused `Main`)
@@ -41,6 +45,8 @@ const {
   isWakeOverBudget,
   recordPeerWake,
   sendToPeer,
+  outboundHop,
+  MAX_HOPS,
   validatePeerName,
   resolvePeerName,
   defaultPeerName,
@@ -54,8 +60,9 @@ const {
   HOLD_TIMEOUT_MS,
   registerPeerSendTool,
   registerPeerStatusTool,
-  registerPeerTodoTool,
   registerPeerRequestTool,
+  readNativeTodos,
+  MAX_PEER_TODOS,
 } = await import('../dist/index.js');
 
 const ALIVE = () => true;
@@ -812,6 +819,189 @@ describe('shutdown unlink', () => {
 });
 
 
+describe('conversation-aware hop accounting', () => {
+  it('keeps an orchestrator<->same-peer conversation at hop 0 across round trips', () => {
+    const orchestrator = { lastInboundPeer: undefined, lastInboundHop: 0 };
+    const agent = { lastInboundPeer: undefined, lastInboundHop: 0 };
+    for (let round = 0; round < 8; round += 1) {
+      const requestHop = outboundHop(orchestrator, 'agent', false);
+      assert.equal(requestHop, 0, `round ${round}: request hop`);
+      assert.ok(requestHop <= MAX_HOPS, `round ${round}: request within cap`);
+      agent.lastInboundPeer = 'orchestrator';
+      agent.lastInboundHop = requestHop;
+      // `peer_send replyTo` is a reply; a bare message back to the peer that
+      // just spoke is level too — neither may advance the chain.
+      for (const isReply of [true, false]) {
+        const replyHop = outboundHop(agent, 'orchestrator', isReply);
+        assert.equal(replyHop, 0, `round ${round}: reply hop (isReply=${isReply})`);
+        assert.ok(replyHop <= MAX_HOPS, `round ${round}: reply within cap`);
+        orchestrator.lastInboundPeer = 'agent';
+        orchestrator.lastInboundHop = replyHop;
+      }
+    }
+  });
+
+  it('advances one hop per relay and refuses past the cap', async () => {
+    const names = ['A', 'B', 'C', 'D', 'E', 'F'];
+    const states = new Map(
+      names.map((name) => [name, { lastInboundPeer: undefined, lastInboundHop: 0 }])
+    );
+    const hops = [];
+    for (let i = 0; i < names.length - 1; i += 1) {
+      const hop = outboundHop(states.get(names[i]), names[i + 1], false);
+      hops.push(hop);
+      // Each relay is a real inbound delivery at the receiving node.
+      states.get(names[i + 1]).lastInboundPeer = names[i];
+      states.get(names[i + 1]).lastInboundHop = hop;
+    }
+    assert.deepEqual(hops, [0, 1, 2, 3, 4]);
+    // F received hop 4; relaying on to a NEW peer is hop 5 → refused. A reply
+    // back down the chain stays at the depth it arrived and is still legal.
+    assert.equal(outboundHop(states.get('F'), 'G', false), 5);
+    assert.equal(outboundHop(states.get('F'), 'E', true), 4);
+    const receipt = await sendToPeer('G', 'too far', {
+      ownName: 'F',
+      hop: 5,
+      listPeers: async () => [],
+    });
+    assert.match(receipt, /Refused: this message is 5 hops from a human prompt and the limit is 4/);
+  });
+
+  it('resets the chain on a human prompt', () => {
+    const st = { lastInboundPeer: 'peer-b', lastInboundHop: 4 };
+    // Relaying on to another peer would be refused...
+    assert.equal(outboundHop(st, 'peer-c', false), 5);
+    // ...until the input / before_agent_start handler clears the state, after
+    // which the send following a human prompt starts a fresh chain.
+    st.lastInboundPeer = undefined;
+    st.lastInboundHop = 0;
+    assert.equal(outboundHop(st, 'peer-c', false), 0);
+  });
+
+  it('derives hop 4, not 5, for a conversation after a hop-4 delivery', async () => {
+    const addr = peerSocketAddress(STATE, 47666);
+    const seen = [];
+    const srv = startPeerServer({
+      address: addr,
+      ownName: () => 'convo',
+      onMessage: async (msg) => {
+        seen.push(msg);
+        return 'injected';
+      },
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const record = {
+        v: 1, pid: 47666, name: 'convo', cwd: '/w/c2', project: 'c2', harness: 'omp',
+        sessionId: '', model: '', socket: addr, startedAt: 1, beatAt: Date.now(), busy: false,
+      };
+      // This node's last real inbound delivery was hop 4 from `convo`. Under
+      // the old single-counter rule the send derived 5 and was refused; the
+      // conversation-aware rule keeps it level at 4 and delivers.
+      const state = { lastInboundPeer: 'convo', lastInboundHop: 4 };
+      const receipt = await sendToPeer('convo', 'still here?', {
+        ownName: 'alpha',
+        state,
+        listPeers: async () => [record],
+      });
+      assert.match(receipt, /^Delivered to convo/);
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].hop, 4);
+      assert.ok(seen[0].hop <= MAX_HOPS);
+    } finally {
+      srv.stop();
+    }
+  });
+});
+
+describe('native todo mapping (readNativeTodos)', () => {
+  const PHASES = [
+    {
+      name: 'Auth',
+      tasks: [
+        { content: 'write tests', status: 'in_progress' },
+        { content: 'ship fix', status: 'pending' },
+        { content: 'rotate key', status: 'blocked', blocker: 'waiting on ops' },
+      ],
+    },
+    { name: 'Docs', tasks: [{ content: 'update readme', status: 'completed' }] },
+  ];
+  const manager = (entries) => ({ getBranch: () => entries });
+  const todoResult = (phases) => ({
+    type: 'message',
+    message: { role: 'toolResult', toolName: 'todo', isError: false, details: { phases } },
+  });
+  const edit = (phases) => ({ type: 'custom', customType: 'user_todo_edit', data: { phases } });
+
+  it('reads phases and tasks out of a user_todo_edit entry', () => {
+    const todos = readNativeTodos(manager([edit(PHASES)]));
+    assert.equal(todos.length, 4);
+    assert.equal(todos[0].phase, 'Auth');
+    assert.equal(todos[0].text, 'write tests');
+    assert.equal(todos[0].status, 'in_progress');
+    assert.equal(todos[1].status, 'pending');
+    assert.equal(todos[1].blocker, undefined);
+    assert.equal(todos[2].status, 'blocked');
+    assert.equal(todos[2].blocker, 'waiting on ops');
+    assert.equal(todos[3].phase, 'Docs');
+    assert.equal(todos[3].status, 'completed');
+  });
+
+  it('takes the newest snapshot, whatever form it is in', () => {
+    const older = [{ name: 'Old', tasks: [{ content: 'old task', status: 'pending' }] }];
+    const newest = [{ name: 'Newest', tasks: [{ content: 'newest task', status: 'completed' }] }];
+    const entries = [edit(older), todoResult(PHASES), todoResult(newest)];
+    assert.equal(readNativeTodos(manager(entries))[0].text, 'newest task');
+    // A user edit after a toolResult wins too.
+    assert.equal(readNativeTodos(manager([...entries, edit(older)]))[0].text, 'old task');
+  });
+
+  it('ignores non-todo and failed toolResults', () => {
+    const ignored = [
+      { type: 'message', message: { role: 'toolResult', toolName: 'bash', isError: false, details: { phases: PHASES } } },
+      { type: 'message', message: { role: 'toolResult', toolName: 'todo', isError: true, details: { phases: PHASES } } },
+      { type: 'message', message: { role: 'assistant', content: 'thinking' } },
+      { type: 'message', message: { role: 'toolResult', toolName: 'todo', isError: false, details: {} } },
+      { type: 'custom', customType: 'some_other_edit', data: { phases: PHASES } },
+    ];
+    assert.deepEqual(readNativeTodos(manager(ignored)), []);
+  });
+
+  it('reads [] when the manager exposes no entry list', () => {
+    assert.deepEqual(readNativeTodos(undefined), []);
+    assert.deepEqual(readNativeTodos({}), []);
+    assert.deepEqual(readNativeTodos({ getBranch: () => 'not an array' }), []);
+    assert.deepEqual(readNativeTodos({ getBranch: () => { throw new Error('boom'); } }), []);
+    // getEntries is the fallback when getBranch is absent.
+    assert.equal(readNativeTodos({ getEntries: () => [edit(PHASES)] }).length, 4);
+  });
+
+  it('clamps long fields and bounds the list, keeping in-progress and pending', () => {
+    const long = 'x'.repeat(500);
+    const tasks = [];
+    for (let i = 0; i < 25; i += 1) tasks.push({ content: `task ${i}`, status: 'pending' });
+    tasks.push({ content: long, status: 'in_progress' });
+    tasks.push({ content: 'later', status: 'blocked', blocker: long });
+    const todos = readNativeTodos(manager([edit([{ name: long, tasks }])]));
+    assert.equal(todos.length, MAX_PEER_TODOS);
+    // The in-progress task is the one worth keeping, and its fields are clamped.
+    const inProgress = todos.find((t) => t.status === 'in_progress');
+    assert.ok(inProgress, 'the in-progress task survives the trim');
+    assert.equal(inProgress.text.length, 200);
+    assert.equal(inProgress.phase.length, 200);
+    // Remaining slots go to pending tasks, kept in transcript order; the
+    // blocked tail is dropped.
+    assert.equal(todos[0].text, 'task 0');
+    assert.equal(todos[18].text, 'task 18');
+    assert.ok(!todos.some((t) => t.status === 'blocked'));
+    // A blocker only travels with a blocked task, clamped the same way.
+    const blocked = readNativeTodos(
+      manager([edit([{ name: 'P', tasks: [{ content: 't', status: 'blocked', blocker: long }] }])])
+    );
+    assert.equal(blocked[0].blocker.length, 200);
+  });
+});
+
 describe('activity, todos, and request/reply tools', () => {
   const now = () => Date.now();
 
@@ -853,23 +1043,50 @@ describe('activity, todos, and request/reply tools', () => {
     assert.match(note, /fixing login/);
     assert.match(note, /1 todo/);
     assert.match(note, /peer_status/);
-    assert.match(note, /peer_todo/);
+    assert.doesNotMatch(note, /peer_todo/);
     assert.match(note, /peer_request/);
   });
 
-  it('peer_status reports activity and todos', async () => {
+  it('peer_status renders native phases with a box per status', async () => {
+    const tools = {};
+    const peers = [{
+      v: 1, pid: 47666, name: 'todo-peer', cwd: '/w/td', project: 'td', harness: 'pi',
+      sessionId: '', model: '', socket: '', startedAt: 1, beatAt: Date.now(), busy: true,
+      activity: 'running tests',
+      todos: [
+        { phase: 'Auth', text: 'write tests', status: 'in_progress' },
+        { phase: 'Auth', text: 'ship fix', status: 'pending' },
+        { phase: 'Auth', text: 'rotate key', status: 'blocked', blocker: 'waiting on ops' },
+        { phase: 'Docs', text: 'update readme', status: 'completed' },
+        { phase: 'Docs', text: 'drop draft', status: 'abandoned' },
+      ],
+    }];
+    registerPeerStatusTool({ registerTool: (def) => { tools[def.name] = def; } }, { listPeers: async () => peers, now });
+    const text = (await tools['peer_status'].execute('id-1', { to: 'todo-peer' })).content[0].text;
+    assert.match(text, /working/);
+    assert.match(text, /running tests/);
+    assert.match(text, /Todos \(5\):/);
+    assert.match(text, /Phase: Auth/);
+    assert.match(text, /Phase: Docs/);
+    assert.match(text, /\[~\] write tests/);
+    assert.match(text, /\[ \] ship fix/);
+    assert.match(text, /\[!\] rotate key — waiting on ops/);
+    assert.match(text, /\[x\] update readme/);
+    assert.match(text, /\[-\] drop draft/);
+  });
+
+  it('peer_status renders legacy doing/done statuses and flat todos', async () => {
     const tools = {};
     const peers = [{
       v: 1, pid: 47666, name: 'todo-peer', cwd: '/w/td', project: 'td', harness: 'pi',
       sessionId: '', model: '', socket: '', startedAt: 1, beatAt: Date.now(), busy: false,
-      activity: 'fixing login', todos: [{ text: 'write tests', status: 'doing' }],
+      todos: [{ text: 'legacy doing', status: 'doing' }, { text: 'legacy done', status: 'done' }],
     }];
     registerPeerStatusTool({ registerTool: (def) => { tools[def.name] = def; } }, { listPeers: async () => peers, now });
-    const res = await tools['peer_status'].execute('id-1', { to: 'todo-peer' });
-    assert.match(res.content[0].text, /fixing login/);
-    assert.match(res.content[0].text, /write tests/);
-    assert.match(res.content[0].text, /\[-\] write tests/);
-    assert.match(res.content[0].text, /idle/);
+    const text = (await tools['peer_status'].execute('id-1', { to: 'todo-peer' })).content[0].text;
+    assert.match(text, /\[~\] legacy doing/);
+    assert.match(text, /\[x\] legacy done/);
+    assert.doesNotMatch(text, /Phase:/);
   });
 
   it('peer_status reports unknown peer', async () => {
@@ -879,34 +1096,13 @@ describe('activity, todos, and request/reply tools', () => {
     assert.match(res.content[0].text, /No live peer named "missing"/);
   });
 
-  it('peer_todo sets activity and todos', async () => {
-    let state = { name: 'alpha', activity: undefined, todos: [] };
-    const tools = {};
-    registerPeerTodoTool({ registerTool: (def) => { tools[def.name] = def; } }, {
-      get: () => state,
-      set: (opts) => {
-        if ('activity' in opts) state.activity = opts.activity;
-        if ('todos' in opts) state.todos = opts.todos ?? [];
-      },
-      tick: async () => {},
-    });
-    const res = await tools['peer_todo'].execute('id-3', { action: 'set', activity: 'coding', todos: ['fix bug', { text: 'test', status: 'doing' }] });
-    assert.match(res.content[0].text, /coding/);
-    assert.equal(state.activity, 'coding');
-    assert.equal(state.todos.length, 2);
-    assert.equal(state.todos[0].text, 'fix bug');
-    assert.equal(state.todos[0].status, 'pending');
-    assert.equal(state.todos[1].text, 'test');
-    assert.equal(state.todos[1].status, 'doing');
-  });
-
   it('peer_request receives a matching reply', async () => {
     const pendingReplies = new Map();
     const tools = {};
     let capturedReplyTo;
     registerPeerRequestTool({ registerTool: (def) => { tools[def.name] = def; } }, {
       ownName: () => 'alpha',
-      getHop: () => 0,
+      getHop: (to) => 0,
       send: async (to, message, outDeps) => {
         capturedReplyTo = outDeps.replyTo;
         return 'Delivered to beta (injected). Its reply will arrive as a peer message.';
@@ -930,7 +1126,7 @@ describe('activity, todos, and request/reply tools', () => {
     const tools = {};
     registerPeerRequestTool({ registerTool: (def) => { tools[def.name] = def; } }, {
       ownName: () => 'alpha',
-      getHop: () => 0,
+      getHop: (to) => 0,
       send: async () => 'Delivered to beta (injected). Its reply will arrive as a peer message.',
       listPeers: async () => [],
       getPendingReplies: () => pendingReplies,

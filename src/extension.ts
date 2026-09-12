@@ -28,12 +28,13 @@ import {
   listLocalAgentIds,
   peerActivityFor,
   probeHost,
+  readNativeTodos,
   readTitleSource,
   releaseBridgedPeer,
 } from './peers/host.js';
 import { defaultPeerName, isValidPeerName, peerNameFromSession, resolvePeerName } from './peers/ids.js';
 import { deliverInboundPeerMessage, HOLD_POLL_MS, MAX_HELD_BATCHES, type HeldBatch } from './peers/inbound.js';
-import { sendToPeer } from './peers/outbound.js';
+import { outboundHop, sendToPeer } from './peers/outbound.js';
 import {
   HEARTBEAT_MS,
   listLivePeers,
@@ -46,7 +47,7 @@ import type { RosterMessage } from './peers/roster.js';
 import { peerSocketAddress, requestPeer, startPeerServer } from './peers/server.js';
 import type { PeerServerHandle } from './peers/server.js';
 import { ensureStateDirs, resolveStateDir } from './store/paths.js';
-import { registerPeerSendTool, registerPeerStatusTool, registerPeerTodoTool, registerPeerRequestTool } from './tools.js';
+import { registerPeerSendTool, registerPeerStatusTool, registerPeerRequestTool } from './tools.js';
 import type { PeerRecord, PeerTodo, PendingReply } from './types.js';
 
 /** Module-scope host probe: caches MODULE handles only, never sessions. */
@@ -54,6 +55,9 @@ const probe = await probeHost();
 const HARNESS = probe.kind === 'hub-bridge' ? 'omp' : 'pi';
 const MODE = probe.kind === 'hub-bridge' ? 'hub' : 'tools';
 const BRIDGE: HubBridge | undefined = probe.kind === 'hub-bridge' ? probe.bridge : undefined;
+
+/** How long a started tool keeps naming the peer's activity before busy/idle takes over. */
+const ACTIVITY_FRESH_MS = 120_000;
 
 interface NodeState {
   stateDir: string;
@@ -67,7 +71,10 @@ interface NodeState {
   /** Peer names whose bridge-claim collision already warned once (cleared on success/release). */
   claimWarned: Set<string>;
   wakes: Map<string, number[]>;
-  inboundHop: number | undefined;
+  /** Peer whose message was last really delivered to this agent (undefined = fresh chain). */
+  lastInboundPeer: string | undefined;
+  /** Hop that last real delivery carried; 0 when there has been none. */
+  lastInboundHop: number;
   /** Batches held while the peer types, oldest first (bounded, polled). */
   held: HeldBatch[];
   holdTimer: NodeJS.Timeout | undefined;
@@ -77,10 +84,10 @@ interface NodeState {
   server: PeerServerHandle | undefined;
   stopBeat: (() => void) | undefined;
   stopped: boolean;
-  /** Optional short activity description published in the heartbeat. */
-  activity?: string;
-  /** Published todo list. */
-  todos: PeerTodo[];
+  /** Native host todo list, re-read from the session transcript on every tick. */
+  nativeTodos: PeerTodo[];
+  /** Last tool the agent started; published as activity while fresh. */
+  nativeActivity: { text: string; at: number } | undefined;
   /** In-flight peer_request promises keyed by reply id. */
   pendingReplies: Map<string, PendingReply>;
 }
@@ -88,8 +95,13 @@ interface NodeState {
 /** One node per process, even when several sessions load the extension. */
 let node: NodeState | undefined;
 
+/** The live node for this process, if one is running. */
+function liveNode(): NodeState | undefined {
+  return node !== undefined && !node.stopped ? node : undefined;
+}
+
 function currentOf(): { pi: ExtensionHostLike; ctx: CommandContextLike } | undefined {
-  return node?.stopped === false ? node.current : undefined;
+  return liveNode()?.current;
 }
 
 /** Stash a held batch (bounded) and ensure the retry poller runs. */
@@ -131,7 +143,8 @@ async function pumpHeld(st: NodeState): Promise<void> {
     // Only a real delivery advances the relay chain — 'held'/'dropped'/'aside'
     // never reached the agent, so they must not consume a hop.
     if (res.outcome === 'woken' || res.outcome === 'injected') {
-      st.inboundHop = batch.message.hop;
+      st.lastInboundPeer = batch.message.from;
+      st.lastInboundHop = batch.message.hop;
     }
     if (res.outcome !== 'held') st.held = st.held.filter((b) => b !== batch);
   }
@@ -241,6 +254,14 @@ async function tick(st: NodeState): Promise<void> {
     localIds,
   });
   st.sessionId = sessionId;
+  st.nativeTodos = readNativeTodos(st.current?.ctx.sessionManager);
+  const lastActivity = st.nativeActivity;
+  const activity =
+    lastActivity !== undefined && Date.now() - lastActivity.at <= ACTIVITY_FRESH_MS
+      ? lastActivity.text
+      : busy
+        ? 'working'
+        : undefined;
   let own: PeerRecord | undefined;
   try {
     own = await writePeerBeat({
@@ -254,8 +275,8 @@ async function tick(st: NodeState): Promise<void> {
       socket: st.socketAddress,
       startedAt: st.startedAt,
       busy,
-      ...(st.activity !== undefined && st.activity !== '' ? { activity: st.activity } : {}),
-      ...(st.todos.length > 0 ? { todos: st.todos } : {}),
+      ...(activity !== undefined && activity !== '' ? { activity } : {}),
+      ...(st.nativeTodos.length > 0 ? { todos: st.nativeTodos } : {}),
     });
   } catch (err) {
     logOf(st, `peers: heartbeat failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -281,7 +302,7 @@ function syncBridge(st: NodeState, others: PeerRecord[]): void {
         BRIDGE as HubBridge,
         record,
         st.name,
-        () => (st.inboundHop === undefined ? 0 : st.inboundHop + 1),
+        () => outboundHop(st, record.name, false),
         (socket, frame) => requestPeer(socket, frame),
         (text) => {
           // A persistent name collision would re-warn every tick — once per
@@ -334,16 +355,17 @@ function armBeatTimer(st: NodeState, ctx: CommandContextLike): void {
 
 /** Get the live node, starting one if this process has none. Re-arms on every event. */
 function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState | undefined {
-  if (node !== undefined && !node.stopped) {
-    node.current = { pi, ctx };
+  const existing = liveNode();
+  if (existing !== undefined) {
+    existing.current = { pi, ctx };
     let sessionId = '';
     try {
       sessionId = ctx.sessionManager?.getSessionId?.() ?? '';
     } catch {
       sessionId = '';
     }
-    if (sessionId !== '' && sessionId !== node.sessionId) armBeatTimer(node, ctx);
-    return node;
+    if (sessionId !== '' && sessionId !== existing.sessionId) armBeatTimer(existing, ctx);
+    return existing;
   }
   try {
     const stateDir = resolveStateDir();
@@ -358,7 +380,8 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
       claimed: new Set<string>(),
       claimWarned: new Set<string>(),
       wakes: new Map<string, number[]>(),
-      inboundHop: undefined,
+      lastInboundPeer: undefined,
+      lastInboundHop: 0,
       held: [],
       holdTimer: undefined,
       current: { pi, ctx },
@@ -366,8 +389,8 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
       stopBeat: undefined,
       lastRejectedSessionName: undefined,
       stopped: false,
-      activity: undefined,
-      todos: [],
+      nativeTodos: [],
+      nativeActivity: undefined,
       pendingReplies: new Map<string, PendingReply>(),
     };
     st.name = defaultPeerName(
@@ -380,9 +403,9 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
         if (st.stopped) return;
         st.server = startPeerServer({
           address: st.socketAddress,
-          ownName: () => (node !== undefined && !node.stopped ? node.name : ''),
+          ownName: () => liveNode()?.name ?? '',
           onMessage: async (msg) => {
-            const live = node !== undefined && !node.stopped ? node : undefined;
+            const live = liveNode();
             if (
               live !== undefined &&
               msg.replyTo !== undefined &&
@@ -393,7 +416,8 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
               live.pendingReplies.delete(msg.replyTo);
               clearTimeout(entry.timer);
               entry.resolve(msg.body);
-              live.inboundHop = msg.hop;
+              live.lastInboundPeer = msg.from;
+              live.lastInboundHop = msg.hop;
               return 'replied';
             }
             const res = await deliverInboundPeerMessage(msg, {
@@ -411,13 +435,15 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
             // Only a real delivery advances the relay chain — 'held'/'dropped'/
             // 'aside' never reached the agent, so they must not consume a hop.
             if ((res.outcome === 'woken' || res.outcome === 'injected') && live !== undefined) {
-              live.inboundHop = msg.hop;
+              live.lastInboundPeer = msg.from;
+              live.lastInboundHop = msg.hop;
             }
             if (res.outcome === 'held' && live !== undefined) holdBatch(live, msg);
             return res.outcome;
           },
           onWarn: (text) => {
-            if (node !== undefined && !node.stopped) warnOf(node, text);
+            const live = liveNode();
+            if (live !== undefined) warnOf(live, text);
           },
         });
         armBeatTimer(st, ctx);
@@ -446,7 +472,10 @@ async function stopNode(st: NodeState): Promise<void> {
   // A successor node for this same pid may already exist (session_switch →
   // ensureNode after `node` was cleared). When it does, this teardown must
   // not delete the successor's live record or socket file.
-  const hasSuccessor = (): boolean => node !== undefined && node !== st && !node.stopped;
+  const hasSuccessor = (): boolean => {
+    const successor = liveNode();
+    return successor !== undefined && successor !== st;
+  };
   try {
     st.stopBeat?.();
   } catch {
@@ -491,7 +520,7 @@ async function stopNode(st: NodeState): Promise<void> {
 
 export default function peersExtension(pi: ExtensionHostLike): void {
   registerPeersCommand(pi, async () => {
-    const st = node !== undefined && !node.stopped ? node : undefined;
+    const st = liveNode();
     if (st !== undefined) {
       // Fresh beat before rendering: a just-run /rename must be visible
       // immediately, not on the next 15s tick. tick() owns its failures.
@@ -512,10 +541,11 @@ export default function peersExtension(pi: ExtensionHostLike): void {
   // guaranteed reply path in ALL modes.
   registerPeerSendTool(pi, {
     send: (to, message, replyTo) => {
-      const st = node !== undefined && !node.stopped ? node : undefined;
+      const st = liveNode();
       return sendToPeer(to, message, {
         ownName: st?.name ?? '',
-        hop: st?.inboundHop === undefined ? 0 : st.inboundHop + 1,
+        ...(st !== undefined ? { state: st } : {}),
+        isReply: replyTo !== undefined,
         // st.peers includes our own record — filter by pid so a stale own
         // name (post-/rename) can't route a send back to ourselves.
         listPeers: async () => (st?.peers ?? []).filter((p) => p.pid !== st?.pid),
@@ -529,43 +559,25 @@ export default function peersExtension(pi: ExtensionHostLike): void {
 
   registerPeerStatusTool(pi, {
     listPeers: async () => {
-      const st = node !== undefined && !node.stopped ? node : undefined;
+      const st = liveNode();
       if (st === undefined) return [];
       return listLivePeers(st.stateDir, st.pid).then((ps) => ps.filter((p) => p.pid !== st.pid));
     },
   });
 
-  registerPeerTodoTool(pi, {
-    get: () => {
-      const st = node !== undefined && !node.stopped ? node : undefined;
-      if (st === undefined) return undefined;
-      return { name: st.name, activity: st.activity, todos: st.todos };
-    },
-    set: (opts) => {
-      const st = node !== undefined && !node.stopped ? node : undefined;
-      if (st === undefined) return;
-      if ('activity' in opts) st.activity = opts.activity;
-      if ('todos' in opts) st.todos = opts.todos ?? [];
-    },
-    tick: async () => {
-      const st = node !== undefined && !node.stopped ? node : undefined;
-      if (st !== undefined) await tick(st);
-    },
-  });
-
   registerPeerRequestTool(pi, {
-    ownName: () => (node !== undefined && !node.stopped ? node.name : ''),
-    getHop: () => {
-      const st = node !== undefined && !node.stopped ? node : undefined;
-      return st?.inboundHop === undefined ? 0 : st.inboundHop + 1;
+    ownName: () => liveNode()?.name ?? '',
+    getHop: (to) => {
+      const st = liveNode();
+      return st === undefined ? 0 : outboundHop(st, to, false);
     },
     listPeers: async () => {
-      const st = node !== undefined && !node.stopped ? node : undefined;
+      const st = liveNode();
       if (st === undefined) return [];
       return (st.peers ?? []).filter((p) => p.pid !== st.pid);
     },
     send: (to, message, outDeps) => {
-      const st = node !== undefined && !node.stopped ? node : undefined;
+      const st = liveNode();
       return sendToPeer(to, message, {
         ...outDeps,
         ...(st !== undefined
@@ -573,7 +585,7 @@ export default function peersExtension(pi: ExtensionHostLike): void {
           : {}),
       });
     },
-    getPendingReplies: () => (node !== undefined && !node.stopped ? node.pendingReplies : undefined),
+    getPendingReplies: () => liveNode()?.pendingReplies,
   });
 
   pi.on('session_start', (_event, ctx) => {
@@ -597,18 +609,60 @@ export default function peersExtension(pi: ExtensionHostLike): void {
     // A human prompt ends any relay chain: the next send starts at hop 0.
     // (No re-beat here: the context handler builds the roster from the last
     // good tick, so an async beat could never land in time for this prompt.)
-    if (node !== undefined && !node.stopped) node.inboundHop = undefined;
+    const live = liveNode();
+    if (live !== undefined) {
+      live.lastInboundPeer = undefined;
+      live.lastInboundHop = 0;
+    }
   });
   // `input` only fires for interactive TTY submits — on rpc/print/headless
   // hosts it never runs, so `before_agent_start` (emitted by the agent loop
-  // in every mode) is the reset that keeps inboundHop from sticking forever.
-  // Peer injections are identified by the `[peer <name>]` prefix
+  // in every mode) is the reset that keeps the hop state from sticking
+  // forever. Peer injections are identified by the `[peer <name>]` prefix
   // formatPeerText stamps on every delivery; a human prompt that happens to
   // start with `[peer ` won't reset — conservative direction, acceptable.
   pi.on('before_agent_start', (event) => {
     const prompt = (event as { prompt?: unknown } | undefined)?.prompt;
     if (typeof prompt === 'string' && prompt.startsWith('[peer ')) return;
-    if (node !== undefined && !node.stopped) node.inboundHop = undefined;
+    const live = liveNode();
+    if (live !== undefined) {
+      live.lastInboundPeer = undefined;
+      live.lastInboundHop = 0;
+    }
+  });
+  // Activity is never synchronous on ctx, so it is captured from the agent's
+  // own tool events: a started tool names what the peer is doing right now,
+  // and its end clears the name (busy/idle still describes the turn).
+  pi.on('tool_execution_start', (event) => {
+    const st = liveNode();
+    if (st === undefined) return;
+    const payload = event as { toolName?: unknown; intent?: unknown } | undefined;
+    const toolName = typeof payload?.toolName === 'string' ? payload.toolName : '';
+    const intent = typeof payload?.intent === 'string' ? payload.intent.trim() : '';
+    const text = intent !== '' ? intent : toolName;
+    if (text === '') return;
+    st.nativeActivity = { text, at: Date.now() };
+  });
+  pi.on('tool_execution_end', (event) => {
+    const st = liveNode();
+    if (st !== undefined) {
+      st.nativeActivity = undefined;
+      // A todo flip must land before the next 15s beat, not after it.
+      if ((event as { toolName?: unknown } | undefined)?.toolName === 'todo') {
+        void tick(st).catch((err: unknown) => logOf(st, `peers: tick failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    }
+  });
+  pi.on('agent_end', () => {
+    const st = liveNode();
+    if (st !== undefined) st.nativeActivity = undefined;
+  });
+  // The reminder fires after the turn's todos came back unfinished; the beat
+  // that follows must carry the fresh phases.
+  pi.on('todo_reminder', () => {
+    const st = liveNode();
+    if (st === undefined) return;
+    void tick(st).catch((err: unknown) => logOf(st, `peers: tick failed: ${err instanceof Error ? err.message : String(err)}`));
   });
   pi.on('context', (event, ctx) => {
     const st = ensureNode(pi, ctx);

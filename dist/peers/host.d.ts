@@ -9,7 +9,7 @@
  * loader rewrites literal specifiers to the host's own module instances).
  * Future #7401 seams slot in here.
  */
-import type { PeerRecord } from '../types.js';
+import type { PeerRecord, PeerTodo } from '../types.js';
 export interface SessionManagerLike {
     getSessionId?: () => string | undefined;
     /** Host session title (omp `ReadonlySessionManager.getSessionName`). */
@@ -18,6 +18,10 @@ export interface SessionManagerLike {
     getHeader?: () => unknown;
     /** Title source on hosts exposing the full manager (`"user"` | `"auto"`). */
     titleSource?: unknown;
+    /** Active-branch session entries, oldest first (omp `ReadonlySessionManager.getBranch`). */
+    getBranch?: () => unknown;
+    /** Every session entry, oldest first (omp `ReadonlySessionManager.getEntries`). */
+    getEntries?: () => unknown;
 }
 export interface SelectOption {
     label: string;
@@ -130,6 +134,16 @@ export declare function listLocalAgentIds(registry: RegistryLike): string[];
  * host exposes neither; callers keep legacy adopt-or-warn behavior.
  */
 export declare function readTitleSource(manager: SessionManagerLike | undefined | null): string | undefined;
+/** Cap on published todos: the heartbeat is a glance, not a transcript. */
+export declare const MAX_PEER_TODOS = 20;
+/** Cap on each published text field (phase, task, blocker). */
+export declare const MAX_PEER_TODO_TEXT_CHARS = 200;
+/**
+ * Read the host's NATIVE todo state out of the session transcript, newest
+ * entry first: a `user_todo_edit` custom entry, else the latest successful
+ * `todo` toolResult. Never throws — a host without the surface reads as [].
+ */
+export declare function readNativeTodos(manager: SessionManagerLike | undefined | null): PeerTodo[];
 export declare function peerActivityFor(record: PeerRecord): string;
 export type PeerRequestFn = (socket: string, frame: {
     t: 'msg';

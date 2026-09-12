@@ -9,13 +9,30 @@
 /** Which harness a peer runs under (drives roster wording + tool hints). */
 export type HarnessKind = 'omp' | 'pi';
 
+/** Native host todo statuses (`tools/todo.ts`) plus the 1.3.0 legacy pair. */
+export type PeerTodoStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'abandoned'
+  | 'blocked'
+  /** Legacy 1.3.0 spelling of `in_progress`. */
+  | 'doing'
+  /** Legacy 1.3.0 spelling of `completed`. */
+  | 'done';
+
 /**
- * One entry in a peer's published todo list.
+ * One entry in a peer's published todo list — mirrored from the host's NATIVE
+ * todo state, not a peer-owned list (see `readNativeTodos`).
  */
 export interface PeerTodo {
   id?: string;
+  /** Owning phase name from the native list (absent on 1.3.0 legacy records). */
+  phase?: string;
   text: string;
-  status?: 'pending' | 'doing' | 'done';
+  status?: PeerTodoStatus;
+  /** What a `blocked` task waits on (native `TodoItem.blocker`). */
+  blocker?: string;
 }
 
 /**

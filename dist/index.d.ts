@@ -11,10 +11,10 @@ export { PEER_NAME_PATTERN, isValidPeerName, validatePeerName, defaultPeerName, 
 export { writePeerBeat, listLivePeers, removePeerRecord, startPresenceBeat, formatBeatAge, HEARTBEAT_MS, PEER_TTL_MS, type BeatInput, type ListPeersOptions, type PresenceBeatOptions, } from './peers/presence.js';
 export { MAX_HOPS, COALESCE_MS, PEER_REQUEST_TIMEOUT_MS, SOCKET_IDLE_MS, MAX_FRAME_BYTES, peerSocketAddress, startPeerServer, requestPeer, type InboundMessage, type PeerServerOptions, type PeerServerHandle, } from './peers/server.js';
 export { deliverInboundPeerMessage, formatPeerText, isWakeOverBudget, recordPeerWake, MAX_WAKES_PER_PEER_PER_HOUR, WAKE_WINDOW_MS, HOLD_TIMEOUT_MS, MAX_HELD_BATCHES, HOLD_POLL_MS, type InboundCarrier, type CurrentHost, type InboundOutcome, type InboundDeps, type HeldBatch, } from './peers/inbound.js';
-export { sendToPeer, type OutboundDeps } from './peers/outbound.js';
+export { sendToPeer, outboundHop, type HopState, type OutboundDeps } from './peers/outbound.js';
 export { buildPeersNote, appendNoteToMessages, type RosterMode, type RosterMessage, } from './peers/roster.js';
-export { probeHost, listLocalAgentIds, claimBridgedPeer, readTitleSource, releaseBridgedPeer, peerActivityFor, type HostProbe, type HubBridge, type RegistryLike, type RegistryRefLike, type PeerRequestFn, type CommandContextLike, type ExtensionHostLike, type UiLike, type SelectOption, } from './peers/host.js';
+export { probeHost, listLocalAgentIds, claimBridgedPeer, readTitleSource, readNativeTodos, MAX_PEER_TODOS, MAX_PEER_TODO_TEXT_CHARS, releaseBridgedPeer, peerActivityFor, type HostProbe, type HubBridge, type RegistryLike, type RegistryRefLike, type PeerRequestFn, type CommandContextLike, type ExtensionHostLike, type UiLike, type SelectOption, } from './peers/host.js';
 export { formatPeersText, formatPeerLine, type PeersSnapshot } from './commands/peers.js';
-export { registerPeerSendTool, registerPeerStatusTool, registerPeerTodoTool, registerPeerRequestTool, type PeerSendDeps, type PeerStatusDeps, type PeerTodoDeps, type PeerRequestDeps, } from './tools.js';
+export { registerPeerSendTool, registerPeerStatusTool, registerPeerRequestTool, type PeerSendDeps, type PeerStatusDeps, type PeerRequestDeps, } from './tools.js';
 export * from './errors.js';
 export type { HarnessKind, PeerRecord, PeerTodo, PendingReply, PeerFrame, PeerReply, } from './types.js';

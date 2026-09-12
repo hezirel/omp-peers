@@ -16,14 +16,14 @@ export { writePeerBeat, listLivePeers, removePeerRecord, startPresenceBeat, form
 export { MAX_HOPS, COALESCE_MS, PEER_REQUEST_TIMEOUT_MS, SOCKET_IDLE_MS, MAX_FRAME_BYTES, peerSocketAddress, startPeerServer, requestPeer, } from './peers/server.js';
 // Delivery.
 export { deliverInboundPeerMessage, formatPeerText, isWakeOverBudget, recordPeerWake, MAX_WAKES_PER_PEER_PER_HOUR, WAKE_WINDOW_MS, HOLD_TIMEOUT_MS, MAX_HELD_BATCHES, HOLD_POLL_MS, } from './peers/inbound.js';
-export { sendToPeer } from './peers/outbound.js';
+export { sendToPeer, outboundHop } from './peers/outbound.js';
 // Roster.
 export { buildPeersNote, appendNoteToMessages, } from './peers/roster.js';
 // Host seam.
-export { probeHost, listLocalAgentIds, claimBridgedPeer, readTitleSource, releaseBridgedPeer, peerActivityFor, } from './peers/host.js';
+export { probeHost, listLocalAgentIds, claimBridgedPeer, readTitleSource, readNativeTodos, MAX_PEER_TODOS, MAX_PEER_TODO_TEXT_CHARS, releaseBridgedPeer, peerActivityFor, } from './peers/host.js';
 // Commands (pure text formatters for tests/consumers).
 export { formatPeersText, formatPeerLine } from './commands/peers.js';
 // Agent tool surface (registered unconditionally in every mode).
-export { registerPeerSendTool, registerPeerStatusTool, registerPeerTodoTool, registerPeerRequestTool, } from './tools.js';
+export { registerPeerSendTool, registerPeerStatusTool, registerPeerRequestTool, } from './tools.js';
 // Errors and shared schemas.
 export * from './errors.js';

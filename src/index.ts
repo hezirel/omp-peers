@@ -75,7 +75,7 @@ export {
   type InboundDeps,
   type HeldBatch,
 } from './peers/inbound.js';
-export { sendToPeer, type OutboundDeps } from './peers/outbound.js';
+export { sendToPeer, outboundHop, type HopState, type OutboundDeps } from './peers/outbound.js';
 
 // Roster.
 export {
@@ -91,6 +91,9 @@ export {
   listLocalAgentIds,
   claimBridgedPeer,
   readTitleSource,
+  readNativeTodos,
+  MAX_PEER_TODOS,
+  MAX_PEER_TODO_TEXT_CHARS,
   releaseBridgedPeer,
   peerActivityFor,
   type HostProbe,
@@ -110,11 +113,9 @@ export { formatPeersText, formatPeerLine, type PeersSnapshot } from './commands/
 export {
   registerPeerSendTool,
   registerPeerStatusTool,
-  registerPeerTodoTool,
   registerPeerRequestTool,
   type PeerSendDeps,
   type PeerStatusDeps,
-  type PeerTodoDeps,
   type PeerRequestDeps,
 } from './tools.js';
 
