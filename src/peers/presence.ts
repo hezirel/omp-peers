@@ -13,7 +13,7 @@ import { basename, join } from 'node:path';
 
 import { durableWriteJson, readJsonFile } from '../store/atomic.js';
 import { peerPath, peersDir } from '../store/paths.js';
-import type { HarnessKind, PeerRecord } from '../types.js';
+import type { HarnessKind, PeerRecord, PeerTodo } from '../types.js';
 
 export const HEARTBEAT_MS = 15_000;
 export const PEER_TTL_MS = 45_000;
@@ -29,6 +29,8 @@ export interface BeatInput {
   socket: string;
   startedAt: number;
   busy?: boolean;
+  activity?: string;
+  todos?: PeerTodo[];
 }
 
 /** Field shape shared by every schema version (version gate lives in isPeerRecord). */
@@ -76,6 +78,12 @@ export async function writePeerBeat(input: BeatInput): Promise<PeerRecord> {
     beatAt: Date.now(),
     busy: input.busy ?? false,
   };
+  if (input.activity !== undefined && input.activity !== '') {
+    record.activity = input.activity;
+  }
+  if (input.todos !== undefined && input.todos.length > 0) {
+    record.todos = input.todos;
+  }
   const file = peerPath(pid, input.stateDir);
   // chmod only on first write — the file keeps its mode across refreshes,
   // so re-chmodding every 15s beat is wasted syscalls.

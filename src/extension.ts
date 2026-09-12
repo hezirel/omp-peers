@@ -46,8 +46,8 @@ import type { RosterMessage } from './peers/roster.js';
 import { peerSocketAddress, requestPeer, startPeerServer } from './peers/server.js';
 import type { PeerServerHandle } from './peers/server.js';
 import { ensureStateDirs, resolveStateDir } from './store/paths.js';
-import { registerPeerSendTool } from './tools.js';
-import type { PeerRecord } from './types.js';
+import { registerPeerSendTool, registerPeerStatusTool, registerPeerTodoTool, registerPeerRequestTool } from './tools.js';
+import type { PeerRecord, PeerTodo, PendingReply } from './types.js';
 
 /** Module-scope host probe: caches MODULE handles only, never sessions. */
 const probe = await probeHost();
@@ -77,6 +77,12 @@ interface NodeState {
   server: PeerServerHandle | undefined;
   stopBeat: (() => void) | undefined;
   stopped: boolean;
+  /** Optional short activity description published in the heartbeat. */
+  activity?: string;
+  /** Published todo list. */
+  todos: PeerTodo[];
+  /** In-flight peer_request promises keyed by reply id. */
+  pendingReplies: Map<string, PendingReply>;
 }
 
 /** One node per process, even when several sessions load the extension. */
@@ -248,6 +254,8 @@ async function tick(st: NodeState): Promise<void> {
       socket: st.socketAddress,
       startedAt: st.startedAt,
       busy,
+      ...(st.activity !== undefined && st.activity !== '' ? { activity: st.activity } : {}),
+      ...(st.todos.length > 0 ? { todos: st.todos } : {}),
     });
   } catch (err) {
     logOf(st, `peers: heartbeat failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -358,6 +366,9 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
       stopBeat: undefined,
       lastRejectedSessionName: undefined,
       stopped: false,
+      activity: undefined,
+      todos: [],
+      pendingReplies: new Map<string, PendingReply>(),
     };
     st.name = defaultPeerName(
       typeof ctx.cwd === 'string' && ctx.cwd !== '' ? ctx.cwd : process.cwd(),
@@ -372,6 +383,19 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
           ownName: () => (node !== undefined && !node.stopped ? node.name : ''),
           onMessage: async (msg) => {
             const live = node !== undefined && !node.stopped ? node : undefined;
+            if (
+              live !== undefined &&
+              msg.replyTo !== undefined &&
+              msg.replyTo !== '' &&
+              live.pendingReplies.has(msg.replyTo)
+            ) {
+              const entry = live.pendingReplies.get(msg.replyTo)!;
+              live.pendingReplies.delete(msg.replyTo);
+              clearTimeout(entry.timer);
+              entry.resolve(msg.body);
+              live.inboundHop = msg.hop;
+              return 'replied';
+            }
             const res = await deliverInboundPeerMessage(msg, {
               getCurrent: () => currentOf(),
               getDraftText: () => {
@@ -441,6 +465,11 @@ async function stopNode(st: NodeState): Promise<void> {
     logOf(st, `peers: dropping ${st.held.length} held message(s) on shutdown`);
   }
   st.held = [];
+  for (const entry of st.pendingReplies.values()) {
+    clearTimeout(entry.timer);
+    entry.reject(new Error('shutting down'));
+  }
+  st.pendingReplies.clear();
   try {
     st.server?.stop({ unlinkSocket: !hasSuccessor() });
   } catch {
@@ -496,6 +525,55 @@ export default function peersExtension(pi: ExtensionHostLike): void {
         },
       });
     },
+  });
+
+  registerPeerStatusTool(pi, {
+    listPeers: async () => {
+      const st = node !== undefined && !node.stopped ? node : undefined;
+      if (st === undefined) return [];
+      return listLivePeers(st.stateDir, st.pid).then((ps) => ps.filter((p) => p.pid !== st.pid));
+    },
+  });
+
+  registerPeerTodoTool(pi, {
+    get: () => {
+      const st = node !== undefined && !node.stopped ? node : undefined;
+      if (st === undefined) return undefined;
+      return { name: st.name, activity: st.activity, todos: st.todos };
+    },
+    set: (opts) => {
+      const st = node !== undefined && !node.stopped ? node : undefined;
+      if (st === undefined) return;
+      if ('activity' in opts) st.activity = opts.activity;
+      if ('todos' in opts) st.todos = opts.todos ?? [];
+    },
+    tick: async () => {
+      const st = node !== undefined && !node.stopped ? node : undefined;
+      if (st !== undefined) await tick(st);
+    },
+  });
+
+  registerPeerRequestTool(pi, {
+    ownName: () => (node !== undefined && !node.stopped ? node.name : ''),
+    getHop: () => {
+      const st = node !== undefined && !node.stopped ? node : undefined;
+      return st?.inboundHop === undefined ? 0 : st.inboundHop + 1;
+    },
+    listPeers: async () => {
+      const st = node !== undefined && !node.stopped ? node : undefined;
+      if (st === undefined) return [];
+      return (st.peers ?? []).filter((p) => p.pid !== st.pid);
+    },
+    send: (to, message, outDeps) => {
+      const st = node !== undefined && !node.stopped ? node : undefined;
+      return sendToPeer(to, message, {
+        ...outDeps,
+        ...(st !== undefined
+          ? { reap: (record) => { void removePeerRecord(st.stateDir, record.pid); } }
+          : {}),
+      });
+    },
+    getPendingReplies: () => (node !== undefined && !node.stopped ? node.pendingReplies : undefined),
   });
 
   pi.on('session_start', (_event, ctx) => {

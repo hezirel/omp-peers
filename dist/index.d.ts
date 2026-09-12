@@ -15,6 +15,6 @@ export { sendToPeer, type OutboundDeps } from './peers/outbound.js';
 export { buildPeersNote, appendNoteToMessages, type RosterMode, type RosterMessage, } from './peers/roster.js';
 export { probeHost, listLocalAgentIds, claimBridgedPeer, readTitleSource, releaseBridgedPeer, peerActivityFor, type HostProbe, type HubBridge, type RegistryLike, type RegistryRefLike, type PeerRequestFn, type CommandContextLike, type ExtensionHostLike, type UiLike, type SelectOption, } from './peers/host.js';
 export { formatPeersText, formatPeerLine, type PeersSnapshot } from './commands/peers.js';
-export { registerPeerSendTool, type PeerSendDeps } from './tools.js';
+export { registerPeerSendTool, registerPeerStatusTool, registerPeerTodoTool, registerPeerRequestTool, type PeerSendDeps, type PeerStatusDeps, type PeerTodoDeps, type PeerRequestDeps, } from './tools.js';
 export * from './errors.js';
-export type { HarnessKind, PeerRecord, PeerFrame, PeerReply, } from './types.js';
+export type { HarnessKind, PeerRecord, PeerTodo, PendingReply, PeerFrame, PeerReply, } from './types.js';

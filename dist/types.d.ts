@@ -8,6 +8,14 @@
 /** Which harness a peer runs under (drives roster wording + tool hints). */
 export type HarnessKind = 'omp' | 'pi';
 /**
+ * One entry in a peer's published todo list.
+ */
+export interface PeerTodo {
+    id?: string;
+    text: string;
+    status?: 'pending' | 'doing' | 'done';
+}
+/**
  * `<state>/peers/<pid>.json` — single-writer, owner-only presence record.
  * Written on a 15s beat; live while `now - beatAt <= 45s` and the pid answers
  * `process.kill(pid, 0)`.
@@ -35,6 +43,10 @@ export interface PeerRecord {
     beatAt: number;
     /** True when the owner's agent loop is mid-turn. */
     busy: boolean;
+    /** Optional short activity description published by the owner. */
+    activity?: string;
+    /** Optional published todo list. */
+    todos?: PeerTodo[];
 }
 /** Frame exchanged over a peer socket, one JSON object per line. */
 export type PeerFrame = {
@@ -53,4 +65,10 @@ export interface PeerReply {
     outcome?: string;
     name?: string;
     error?: string;
+}
+/** In-flight request a peer is waiting for a reply to. */
+export interface PendingReply {
+    resolve: (body: string) => void;
+    reject: (err: Error) => void;
+    timer?: NodeJS.Timeout;
 }

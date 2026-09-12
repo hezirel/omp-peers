@@ -47,11 +47,15 @@ const {
   peerSocketAddress,
   startPeerServer,
   requestPeer,
+  formatPeerLine,
   formatPeersText,
   peerPath,
   PEER_TTL_MS,
   HOLD_TIMEOUT_MS,
   registerPeerSendTool,
+  registerPeerStatusTool,
+  registerPeerTodoTool,
+  registerPeerRequestTool,
 } = await import('../dist/index.js');
 
 const ALIVE = () => true;
@@ -807,6 +811,134 @@ describe('shutdown unlink', () => {
   });
 });
 
+
+describe('activity, todos, and request/reply tools', () => {
+  const now = () => Date.now();
+
+  it('round-trips activity and todos through writePeerBeat and listLivePeers', async () => {
+    await writePeerBeat({
+      stateDir: STATE, pid: 47666, name: 'todo-peer', cwd: join(STATE, 'td'),
+      harness: 'pi', socket: peerSocketAddress(STATE, 47666), startedAt: 1, busy: false,
+      activity: 'fixing login', todos: [{ id: '1', text: 'write tests', status: 'doing' }],
+    });
+    const live = await listLivePeers(STATE, 0, { isAlive: ALIVE, now: now() });
+    const p = live.find((x) => x.name === 'todo-peer');
+    assert.ok(p);
+    assert.equal(p.activity, 'fixing login');
+    assert.equal(p.todos.length, 1);
+    assert.equal(p.todos[0].text, 'write tests');
+    assert.equal(p.todos[0].status, 'doing');
+  });
+
+  it('shows activity and todo count in formatPeerLine', () => {
+    const t = Date.now();
+    const rec = {
+      v: 1, pid: 47666, name: 'todo-peer', cwd: '/w/td', project: 'td', harness: 'pi',
+      sessionId: '', model: '', socket: '', startedAt: 1, beatAt: t, busy: false,
+      activity: 'fixing login', todos: [{ text: 'write tests' }],
+    };
+    const line = formatPeerLine(rec, t, 'alpha');
+    assert.match(line, /fixing login/);
+    assert.match(line, /1 todo/);
+  });
+
+  it('shows activity, todo count, and tool hints in buildPeersNote', () => {
+    const t = Date.now();
+    const peer = {
+      v: 1, pid: 47666, name: 'todo-peer', cwd: '/w/td', project: 'td', harness: 'pi',
+      sessionId: '', model: '', socket: '', startedAt: 1, beatAt: t, busy: false,
+      activity: 'fixing login', todos: [{ text: 'write tests' }],
+    };
+    const note = buildPeersNote('alpha', [peer], 'tools');
+    assert.match(note, /fixing login/);
+    assert.match(note, /1 todo/);
+    assert.match(note, /peer_status/);
+    assert.match(note, /peer_todo/);
+    assert.match(note, /peer_request/);
+  });
+
+  it('peer_status reports activity and todos', async () => {
+    const tools = {};
+    const peers = [{
+      v: 1, pid: 47666, name: 'todo-peer', cwd: '/w/td', project: 'td', harness: 'pi',
+      sessionId: '', model: '', socket: '', startedAt: 1, beatAt: Date.now(), busy: false,
+      activity: 'fixing login', todos: [{ text: 'write tests', status: 'doing' }],
+    }];
+    registerPeerStatusTool({ registerTool: (def) => { tools[def.name] = def; } }, { listPeers: async () => peers, now });
+    const res = await tools['peer_status'].execute('id-1', { to: 'todo-peer' });
+    assert.match(res.content[0].text, /fixing login/);
+    assert.match(res.content[0].text, /write tests/);
+    assert.match(res.content[0].text, /\[-\] write tests/);
+    assert.match(res.content[0].text, /idle/);
+  });
+
+  it('peer_status reports unknown peer', async () => {
+    const tools = {};
+    registerPeerStatusTool({ registerTool: (def) => { tools[def.name] = def; } }, { listPeers: async () => [], now });
+    const res = await tools['peer_status'].execute('id-2', { to: 'missing' });
+    assert.match(res.content[0].text, /No live peer named "missing"/);
+  });
+
+  it('peer_todo sets activity and todos', async () => {
+    let state = { name: 'alpha', activity: undefined, todos: [] };
+    const tools = {};
+    registerPeerTodoTool({ registerTool: (def) => { tools[def.name] = def; } }, {
+      get: () => state,
+      set: (opts) => {
+        if ('activity' in opts) state.activity = opts.activity;
+        if ('todos' in opts) state.todos = opts.todos ?? [];
+      },
+      tick: async () => {},
+    });
+    const res = await tools['peer_todo'].execute('id-3', { action: 'set', activity: 'coding', todos: ['fix bug', { text: 'test', status: 'doing' }] });
+    assert.match(res.content[0].text, /coding/);
+    assert.equal(state.activity, 'coding');
+    assert.equal(state.todos.length, 2);
+    assert.equal(state.todos[0].text, 'fix bug');
+    assert.equal(state.todos[0].status, 'pending');
+    assert.equal(state.todos[1].text, 'test');
+    assert.equal(state.todos[1].status, 'doing');
+  });
+
+  it('peer_request receives a matching reply', async () => {
+    const pendingReplies = new Map();
+    const tools = {};
+    let capturedReplyTo;
+    registerPeerRequestTool({ registerTool: (def) => { tools[def.name] = def; } }, {
+      ownName: () => 'alpha',
+      getHop: () => 0,
+      send: async (to, message, outDeps) => {
+        capturedReplyTo = outDeps.replyTo;
+        return 'Delivered to beta (injected). Its reply will arrive as a peer message.';
+      },
+      listPeers: async () => [],
+      getPendingReplies: () => pendingReplies,
+    });
+    const executePromise = tools['peer_request'].execute('id-4', { to: 'beta', message: 'hello', timeout_ms: 5000 });
+    // Give the execute a moment to set the pending entry and timer, then reply.
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(capturedReplyTo, 'replyTo was passed to send');
+    const entry = pendingReplies.get(capturedReplyTo);
+    assert.ok(entry, 'pending entry exists');
+    entry.resolve('hi back');
+    const res = await executePromise;
+    assert.match(res.content[0].text, /Reply from beta: hi back/);
+  });
+
+  it('peer_request times out with a peer_status hint', async () => {
+    const pendingReplies = new Map();
+    const tools = {};
+    registerPeerRequestTool({ registerTool: (def) => { tools[def.name] = def; } }, {
+      ownName: () => 'alpha',
+      getHop: () => 0,
+      send: async () => 'Delivered to beta (injected). Its reply will arrive as a peer message.',
+      listPeers: async () => [],
+      getPendingReplies: () => pendingReplies,
+    });
+    const res = await tools['peer_request'].execute('id-5', { to: 'beta', message: 'hello', timeout_ms: 100 });
+    assert.match(res.content[0].text, /timed out/);
+  });
+});
 after(async () => {
   await rm(STATE, { recursive: true, force: true });
 });

@@ -9,7 +9,11 @@ import { formatBeatAge } from '../peers/presence.js';
 /** `backend · omp(1234) · C:\work · model-id · working · beat 3s ago`. */
 export function formatPeerLine(p, now, selfName) {
     const self = p.name === selfName ? ' · you' : '';
-    return `${p.name} · ${p.harness}(${p.pid}) · ${p.cwd} · ${p.model === '' ? '—' : p.model} · ${p.busy ? 'working' : 'idle'} · beat ${formatBeatAge(p.beatAt, now)}${self}`;
+    const activity = p.activity ? ` · ${p.activity}` : '';
+    const todos = p.todos?.length
+        ? ` · ${p.todos.length} todo${p.todos.length === 1 ? '' : 's'}`
+        : '';
+    return `${p.name} · ${p.harness}(${p.pid}) · ${p.cwd} · ${p.model === '' ? '—' : p.model} · ${p.busy ? 'working' : 'idle'} · beat ${formatBeatAge(p.beatAt, now)}${activity}${todos}${self}`;
 }
 export function formatPeersText(snap, now) {
     const lines = [...snap.peers]
@@ -31,7 +35,7 @@ export function registerPeersCommand(pi, getSnapshot) {
                             .sort((a, b) => a.name.localeCompare(b.name))
                             .map((p) => ({
                             label: p.name,
-                            description: `${p.harness}(${p.pid}) · ${p.cwd}${p.busy ? ' · working' : ''}`,
+                            description: `${p.harness}(${p.pid}) · ${p.cwd}${p.busy ? ' · working' : ''}${p.activity ? ` · ${p.activity}` : ''}`,
                         })));
                         if (typeof picked === 'string' && picked !== '') {
                             const peer = snap.peers.find((p) => p.name === picked);

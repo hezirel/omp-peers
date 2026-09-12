@@ -55,6 +55,12 @@ export async function writePeerBeat(input) {
         beatAt: Date.now(),
         busy: input.busy ?? false,
     };
+    if (input.activity !== undefined && input.activity !== '') {
+        record.activity = input.activity;
+    }
+    if (input.todos !== undefined && input.todos.length > 0) {
+        record.todos = input.todos;
+    }
     const file = peerPath(pid, input.stateDir);
     // chmod only on first write — the file keeps its mode across refreshes,
     // so re-chmodding every 15s beat is wasted syscalls.

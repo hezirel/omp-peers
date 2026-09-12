@@ -107,13 +107,24 @@ export {
 // Commands (pure text formatters for tests/consumers).
 export { formatPeersText, formatPeerLine, type PeersSnapshot } from './commands/peers.js';
 // Agent tool surface (registered unconditionally in every mode).
-export { registerPeerSendTool, type PeerSendDeps } from './tools.js';
+export {
+  registerPeerSendTool,
+  registerPeerStatusTool,
+  registerPeerTodoTool,
+  registerPeerRequestTool,
+  type PeerSendDeps,
+  type PeerStatusDeps,
+  type PeerTodoDeps,
+  type PeerRequestDeps,
+} from './tools.js';
 
 // Errors and shared schemas.
 export * from './errors.js';
 export type {
   HarnessKind,
   PeerRecord,
+  PeerTodo,
+  PendingReply,
   PeerFrame,
   PeerReply,
 } from './types.js';

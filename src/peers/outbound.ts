@@ -61,6 +61,7 @@ export async function sendToPeer(
     if (reply.outcome === 'coalesced')
       return `Delivered to ${name} (coalesced into a batch). Its reply will arrive as a peer message.`;
     if (reply.outcome === 'held') return `Held at ${name} (typing) — delivers when they submit. Its reply will arrive as a peer message.`;
+    if (reply.outcome === 'replied') return `Replied to ${name}.`;
     return `Delivered to ${name} (${reply.outcome ?? 'injected'}). Its reply will arrive as a peer message.`;
   } catch (err) {
     return `Delivery to ${name} failed: ${err instanceof Error ? err.message : String(err)}`;

@@ -24,6 +24,6 @@ export { probeHost, listLocalAgentIds, claimBridgedPeer, readTitleSource, releas
 // Commands (pure text formatters for tests/consumers).
 export { formatPeersText, formatPeerLine } from './commands/peers.js';
 // Agent tool surface (registered unconditionally in every mode).
-export { registerPeerSendTool } from './tools.js';
+export { registerPeerSendTool, registerPeerStatusTool, registerPeerTodoTool, registerPeerRequestTool, } from './tools.js';
 // Errors and shared schemas.
 export * from './errors.js';

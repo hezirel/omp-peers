@@ -7,7 +7,7 @@
  * `process.kill(pid, 0)`. Stale records are reaped (unlinked on sight).
  * Shutdown unlinks the own record.
  */
-import type { HarnessKind, PeerRecord } from '../types.js';
+import type { HarnessKind, PeerRecord, PeerTodo } from '../types.js';
 export declare const HEARTBEAT_MS = 15000;
 export declare const PEER_TTL_MS = 45000;
 export interface BeatInput {
@@ -21,6 +21,8 @@ export interface BeatInput {
     socket: string;
     startedAt: number;
     busy?: boolean;
+    activity?: string;
+    todos?: PeerTodo[];
 }
 /** Write (or refresh) this process's presence record. Owner-only writer. */
 export declare function writePeerBeat(input: BeatInput): Promise<PeerRecord>;

@@ -13,18 +13,24 @@ export function buildPeersNote(ownName, peers, mode) {
         ? '- (no other peers are live right now)'
         : [...peers]
             .sort((a, b) => a.name.localeCompare(b.name))
-            .map((peer) => 
-        // pid in every row: suffixed collision names (e.g. `test-peer`
-        // vs `test-peer-22148`) must never be mistakable for self.
-        `- \`${peer.name}\` — ${peer.harness}(${peer.pid}) in ${peer.cwd}${peer.busy ? ' (working)' : ' (idle)'}`)
+            .map((peer) => {
+            // pid in every row: suffixed collision names (e.g. `test-peer`
+            // vs `test-peer-22148`) must never be mistakable for self.
+            const busy = peer.busy ? ' (working)' : ' (idle)';
+            const activity = peer.activity ? ` · ${peer.activity}` : '';
+            const todoCount = peer.todos?.length
+                ? ` · ${peer.todos.length} todo${peer.todos.length === 1 ? '' : 's'}`
+                : '';
+            return `- \`${peer.name}\` — ${peer.harness}(${peer.pid}) in ${peer.cwd}${busy}${activity}${todoCount}`;
+        })
             .join('\n');
     const contact = 'Do NOT message peers unless the user explicitly asks, or to reply to an inbound peer message.';
     const what = 'A peer is another live agent instance on this machine. Its messages reach you as user text starting with `[peer <name>]:` — that is the peer speaking, not your user.';
     if (peers.length === 0)
         return [`<peers>`, `You are \`${ownName}\`. No other peers are live right now.`, `</peers>`].join('\n');
     const how = mode === 'hub'
-        ? '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. Native `hub` op=send is best-effort only.'
-        : '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message.';
+        ? '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. Native `hub` op=send is best-effort only. `peer_status`, `peer_todo`, and `peer_request` are available agent tools.'
+        : '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. `peer_status`, `peer_todo`, and `peer_request` are available agent tools.';
     const naming = 'Names are session names (`/rename <name>`); valid 1-24 [a-zA-Z0-9_.-], else `<dir>-<pid>`. Auto-titles never qualify — `/rename` to claim an address.';
     return [`<peers>`, `You are \`${ownName}\`. ${contact}`, what, how, naming, '', rows, `</peers>`].join('\n');
 }

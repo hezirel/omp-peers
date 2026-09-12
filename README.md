@@ -14,7 +14,7 @@ peer_send to="backend" ...  injects a real prompt into that instance's agent
 <peers>
 You are `main-peer`. Do NOT message peers unless the user explicitly asks, or to reply to an inbound peer message.
 A peer is another live agent instance on this machine. Its messages reach you as user text starting with `[peer <name>]:` — that is the peer speaking, not your user.
-`peer_send` to="<name>" delivers a real prompt there; its reply arrives here as a peer message.
+`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. `peer_status`, `peer_todo`, and `peer_request` are available agent tools.
 Names are session names (`/rename <name>`); valid 1-24 [a-zA-Z0-9_.-], else `<dir>-<pid>`. Auto-titles never qualify — `/rename` to claim an address.
 
 - `test-peer` — omp(34532) in C:\work\any (idle)
@@ -92,10 +92,10 @@ Then restart omp. Verify with `/peers` — you should see yourself listed.
 3. Add the plugin to `%USERPROFILE%\.omp\plugins\omp-plugins.lock.json`:
 
    ```json
-   { "plugins": { "omp-peers": { "version": "1.0.0", "enabledFeatures": null, "enabled": true } }, "settings": {} }
+{ "plugins": { "omp-peers": { "version": "1.3.0", "enabledFeatures": null, "enabled": true } }, "settings": {} }
    ```
 
-4. `omp plugin list` should show `omp-peers@1.0.0`. Restart omp.
+4. `omp plugin list` should show `omp-peers@1.3.0`. Restart omp.
 
 </details>
 
@@ -108,12 +108,19 @@ Then restart omp. Verify with `/peers` — you should see yourself listed.
 
 | Command / tool | What it does |
 |---|---|
-| `/peers` | List live instances: name · harness(pid) · cwd · model · busy/idle · beat age. `held N` in the header while batches wait on your composer. Interactive picker in the TUI when available. Always renders a fresh beat. |
+| `/peers` | List live instances: name · harness(pid) · cwd · model · busy/idle · activity · todo count · beat age. `held N` in the header while batches wait on your composer. Interactive picker in the TUI when available. Always renders a fresh beat. |
 | `/rename <name>` | The host's builtin session rename. The peer name follows automatically. Valid peer addresses: 1–24 chars of `a-z A-Z 0-9 _ . -`; anything else (spaces, auto-generated titles) keeps the default `<dir>-<pid>` name. |
 | `peer_send` (agent tool) | `to` (peer name, from `/peers`), `message`, optional `replyTo`. Injects a real prompt into the peer: steers mid-turn, wakes when idle, holds while the peer is typing. Fire-and-forget — replies arrive as peer messages (`Held at <name> (typing)` while held). |
-| `<peers>` context note | Injected into every prompt: your own name, the no-contact-unless-asked rule, what a peer message looks like (`[peer <name>]:` — the peer, not your user), and every live peer. Solo prompts compact to own-name only. |
+| `peer_status` (agent tool) | `to` (peer name). Returns busy/idle, current activity, published todos as a checklist, and last beat age. Use before pestering an agent. |
+| `peer_todo` (agent tool) | `action` (`set`/`add`/`clear`), optional `activity`, optional `todos`. Publishes your activity and todo list in your heartbeat so peers can see what you are doing. Values are clamped (200 chars, 20 todos). |
+| `peer_request` (agent tool) | `to`, `message`, `timeout_ms` (default 30000, clamped 5–120 s), optional `replyTo`. Sends a message and waits for a matching `peer_send` reply from the target. Returns `Reply from <to>: ...` or a timeout with a `peer_status` hint. |
+| `<peers>` context note | Injected into every prompt: your own name, the no-contact-unless-asked rule, what a peer message looks like (`[peer <name>]:` — the peer, not your user), the available tools, and every live peer. Solo prompts compact to own-name only. |
 
 Agents reply with `peer_send` too — every delivered message carries the exact reply line, so no tool discovery is needed on the far end.
+
+## Orchestrating with timeout
+
+`peer_request` is the right tool when an orchestrator peer must not wait forever for an answer: it sends a message and resolves with the reply body or a timeout. Use `peer_status` before or after a slow call to check whether the peer is busy and what it is working on, and have each agent publish its current task with `peer_todo` so the orchestrator can prioritize without constant polling.
 
 ## Safety
 
@@ -136,7 +143,7 @@ State dir: `%LOCALAPPDATA%\omp-peers\` (Windows), `~/.omp/var/omp-peers/` elsewh
 
 ```sh
 npm install
-npm test        # build + 45 acceptance tests (two fake peers, real sockets; +1 unix-only socket test)
+npm test        # build + 53 acceptance tests (two fake peers, real sockets; +1 unix-only socket test)
 ```
 
 `dist/` is committed so installs load without a build step; run `npm run build` after changing `src/` and commit both.
