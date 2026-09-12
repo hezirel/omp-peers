@@ -10,7 +10,7 @@
  *   <state>/peers/<pid>.json      owner-only presence records (0600)
  *   <state>/peers/<pid>.sock      unix sockets (non-Windows only)
  */
-import { mkdir } from 'node:fs/promises';
+import { chmod, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 function stripTrailingSeparators(p) {
@@ -40,5 +40,12 @@ export function peerPath(pid, stateDir = resolveStateDir()) {
 export async function ensureStateDirs(stateDir = resolveStateDir()) {
     await mkdir(stateDir, { recursive: true });
     await mkdir(peersDir(stateDir), { recursive: true });
+    // mkdir's mode only applies to dirs it creates — chmod unconditionally so
+    // pre-existing installs get repaired too. Other users must not reach the
+    // socket files (local prompt-injection surface).
+    if (process.platform !== 'win32') {
+        await chmod(stateDir, 0o700).catch(() => undefined);
+        await chmod(peersDir(stateDir), 0o700).catch(() => undefined);
+    }
     return stateDir;
 }

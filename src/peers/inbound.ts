@@ -84,7 +84,8 @@ export function isWakeOverBudget(
 ): boolean {
   const stamps = wakes.get(from) ?? [];
   const fresh = stamps.filter((t) => now - t < WAKE_WINDOW_MS);
-  if (fresh.length !== stamps.length) wakes.set(from, fresh);
+  if (fresh.length === 0) wakes.delete(from);
+  else if (fresh.length !== stamps.length) wakes.set(from, fresh);
   return fresh.length >= max;
 }
 
@@ -98,11 +99,21 @@ export function recordPeerWake(wakes: Map<string, number[]>, from: string, now: 
   );
 }
 
-function aside(pi: ExtensionHostLike, text: string): void {
+// `followUp` queues without starting a turn in either host state — that is
+// the wake budget's intent; `aside` would still wake an idle session.
+// Returns the failure message when the host rejects the call.
+async function aside(
+  pi: ExtensionHostLike,
+  ctx: CommandContextLike,
+  text: string
+): Promise<string | undefined> {
   try {
-    pi.sendUserMessage?.(text, { deliverAs: 'aside' });
-  } catch {
-    // Aside fallback is best-effort.
+    await pi.sendUserMessage?.(text, { deliverAs: 'followUp' });
+    return undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    warn(ctx, `peers: aside delivery failed (${message})`);
+    return message;
   }
 }
 
@@ -138,14 +149,15 @@ export async function deliverInboundPeerMessage(
   } catch {
     willWake = true;
   }
-  if (willWake && isWakeOverBudget(wakes, from, now)) {
-    aside(cur.pi, text);
-    return { outcome: 'aside', detail: 'hourly wake budget exceeded' };
-  }
-
   if (typeof cur.pi.sendUserMessage !== 'function') {
     warn(cur.ctx, `peers: dropped a message from ${from} — the host has no sendUserMessage`);
     return { outcome: 'dropped', detail: 'no sendUserMessage on host' };
+  }
+
+  if (willWake && isWakeOverBudget(wakes, from, now)) {
+    const failure = await aside(cur.pi, cur.ctx, text);
+    if (failure !== undefined) return { outcome: 'dropped', detail: failure };
+    return { outcome: 'aside', detail: 'hourly wake budget exceeded' };
   }
 
   // Typing protection: injecting while idle runs the host prompt flow, which
@@ -164,7 +176,7 @@ export async function deliverInboundPeerMessage(
     return { outcome: 'held', detail: 'peer is typing' };
   }
   try {
-    cur.pi.sendUserMessage(text);
+    await cur.pi.sendUserMessage(text);
     if (willWake) recordPeerWake(wakes, from, now);
     return { outcome: willWake ? 'woken' : 'injected' };
   } catch (err) {

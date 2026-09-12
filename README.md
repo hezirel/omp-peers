@@ -15,7 +15,7 @@ peer_send to="backend" ...  injects a real prompt into that instance's agent
 You are `main-peer`. Do NOT message peers unless the user explicitly asks, or to reply to an inbound peer message.
 A peer is another live agent instance on this machine. Its messages reach you as user text starting with `[peer <name>]:` — that is the peer speaking, not your user.
 `peer_send` to="<name>" delivers a real prompt there; its reply arrives here as a peer message.
-Names are session names (`/rename <name>`); valid 1-24 [a-zA-Z0-9_.-], else `<dir>-<pid>`.
+Names are session names (`/rename <name>`); valid 1-24 [a-zA-Z0-9_.-], else `<dir>-<pid>`. Auto-titles never qualify — `/rename` to claim an address.
 
 - `test-peer` — omp(34532) in C:\work\any (idle)
 </peers>
@@ -120,7 +120,7 @@ Agents reply with `peer_send` too — every delivered message carries the exact 
 - **Explicit names only.** There is no broadcast/address-all; you message exactly the peer you name.
 - **Relay cap.** Agent-to-agent relays carry a hop counter; chains more than 4 hops from a human prompt are refused with an explanation.
 - **Coalescing.** Bursts from one sender within 400 ms are delivered as a single message — one wake, not N.
-- **Wake budget.** 20 real wakes per peer per rolling hour; excess queues as non-interrupting asides instead of starting turns.
+- **Wake budget.** 20 real wakes per peer per rolling hour; excess queues as follow-ups — delivered without waking the session or starting a turn.
 - **Typing protection.** A message arriving while the peer is typing never wipes their composer draft: idle delivery holds (sender sees `Held`, `/peers` shows `held N`) and injects on submit, latest after 2 min; mid-turn steers still land immediately. Verify: A types without submitting, B sends (receipt `Held`), A submits (message injects, draft intact).
 - **Per-session boundaries.** Messages are injected as attributed text into the peer's own session; no tools execute across processes.
 
@@ -136,7 +136,7 @@ State dir: `%LOCALAPPDATA%\omp-peers\` (Windows), `~/.omp/var/omp-peers/` elsewh
 
 ```sh
 npm install
-npm test        # build + 25 acceptance tests (two fake peers, real sockets)
+npm test        # build + 45 acceptance tests (two fake peers, real sockets; +1 unix-only socket test)
 ```
 
 `dist/` is committed so installs load without a build step; run `npm run build` after changing `src/` and commit both.

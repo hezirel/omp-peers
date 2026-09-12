@@ -28,14 +28,6 @@ export function bridgeResolvesHost(bridge) {
     }
 }
 /**
- * `executeSend` reads `settings` only to resolve an await timeout
- * (`params.await`), which the inbound path never sets. A real
- * SettingsManager is unreachable from an extension, so this stands in.
- */
-export const SETTINGS_STUB = {
-    get: (_key) => undefined,
-};
-/**
  * Capability probe. Literal specifiers only (the host rewrites them), always
  * inside try/catch: on any host without these modules this resolves
  * `{kind:'tools'}` and the extension falls back to the `peer_send` surface.
@@ -44,15 +36,13 @@ export const SETTINGS_STUB = {
 export async function probeHost() {
     try {
         const registryModule = (await import('@oh-my-pi/pi-coding-agent/registry/agent-registry'));
-        const messagingModule = (await import('@oh-my-pi/pi-coding-agent/tools/hub/messaging'));
         const agentRegistry = registryModule['AgentRegistry'];
-        const send = messagingModule['executeSend'];
-        if (typeof agentRegistry?.global !== 'function' || typeof send !== 'function') {
+        if (typeof agentRegistry?.global !== 'function') {
             return { kind: 'tools' };
         }
         return {
             kind: 'hub-bridge',
-            bridge: { registry: agentRegistry.global(), send: send },
+            bridge: { registry: agentRegistry.global() },
         };
     }
     catch {
@@ -75,43 +65,6 @@ function registryRefs(registry) {
         return [];
     }
     return [];
-}
-/**
- * Find OURSELVES in the HOST registry: first by live session object identity
- * (when the host exposes it on ctx), then by session-file/session-id match
- * against `sessionManager.getSessionId()`. NEVER by name — peer names are
- * explicitly non-unique across processes. Returns undefined when nothing
- * matches; the caller drops (never misdelivers).
- */
-export function discoverOwnAgentId(registry, ctx) {
-    let sessionId = '';
-    try {
-        sessionId = ctx.sessionManager?.getSessionId?.() ?? '';
-    }
-    catch {
-        sessionId = '';
-    }
-    const liveSession = ctx['session'];
-    const refs = registryRefs(registry);
-    if (liveSession !== undefined && liveSession !== null) {
-        for (const ref of refs) {
-            if (ref.session === liveSession && typeof ref.id === 'string' && ref.id !== '') {
-                return ref.id;
-            }
-        }
-    }
-    if (sessionId !== '') {
-        for (const ref of refs) {
-            if (typeof ref.id !== 'string' || ref.id === '')
-                continue;
-            const file = typeof ref.sessionFile === 'string' ? ref.sessionFile : '';
-            const sid = typeof ref.sessionId === 'string' ? ref.sessionId : '';
-            if (ref.id === sessionId || (file !== '' && file.includes(sessionId)) || sid === sessionId) {
-                return ref.id;
-            }
-        }
-    }
-    return undefined;
 }
 /**
  * `peerSocket` marker). Used to keep a session name from colliding with a
@@ -203,8 +156,15 @@ export function claimBridgedPeer(bridge, record, ownName, getHop, request, onWar
                 ...(msg.replyTo !== undefined && msg.replyTo !== '' ? { replyTo: msg.replyTo } : {}),
                 hop: getHop(),
             });
-            const outcome = reply?.outcome;
-            return outcome === 'woken' || outcome === 'held' ? outcome : 'injected';
+            // A dead socket or refused frame is a FAILURE, not a delivery: throwing
+            // makes the host bus report outcome 'failed' with this error text
+            // instead of the old blanket 'injected' that lied to hub senders.
+            if (reply === undefined || !reply.ok) {
+                throw new Error(reply?.error ?? 'peer socket unreachable');
+            }
+            // Pass the real outcome through ('woken'/'injected'/'held'/'aside'/
+            // 'dropped') — the receipt must show what the peer actually did.
+            return reply.outcome ?? 'injected';
         },
     };
     try {

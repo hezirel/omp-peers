@@ -5,13 +5,6 @@
  * (all names are unique and never minified away). `instanceof` also works.
  */
 
-export class LockError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'LockError';
-  }
-}
-
 export class CorruptStateError extends Error {
   constructor(message: string) {
     super(message);
@@ -26,9 +19,3 @@ export class PeerNameError extends Error {
   }
 }
 
-export class PeerNotFoundError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'PeerNotFoundError';
-  }
-}

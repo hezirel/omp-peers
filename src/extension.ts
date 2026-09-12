@@ -26,6 +26,7 @@ import {
   bridgeResolvesHost,
   claimBridgedPeer,
   listLocalAgentIds,
+  peerActivityFor,
   probeHost,
   readTitleSource,
   releaseBridgedPeer,
@@ -63,6 +64,8 @@ interface NodeState {
   sessionId: string;
   peers: PeerRecord[];
   claimed: Set<string>;
+  /** Peer names whose bridge-claim collision already warned once (cleared on success/release). */
+  claimWarned: Set<string>;
   wakes: Map<string, number[]>;
   inboundHop: number | undefined;
   /** Batches held while the peer types, oldest first (bounded, polled). */
@@ -86,7 +89,14 @@ function currentOf(): { pi: ExtensionHostLike; ctx: CommandContextLike } | undef
 /** Stash a held batch (bounded) and ensure the retry poller runs. */
 function holdBatch(st: NodeState, msg: { from: string; body: string; replyTo?: string; hop: number }): void {
   st.held.push({ message: { ...msg }, receivedAt: Date.now() });
-  while (st.held.length > MAX_HELD_BATCHES) st.held.shift();
+  while (st.held.length > MAX_HELD_BATCHES) {
+    // Overflow drops the oldest batch — the sender got a 'held' receipt
+    // promising delivery, so the drop must not be silent.
+    const dropped = st.held.shift();
+    if (dropped !== undefined) {
+      warnOf(st, `peers: held queue full — dropped a message from ${dropped.message.from}`);
+    }
+  }
   if (st.holdTimer !== undefined) return;
   st.holdTimer = setInterval(() => {
     void pumpHeld(st).catch((err: unknown) => logOf(st, `peers: held retry failed: ${err instanceof Error ? err.message : String(err)}`));
@@ -99,7 +109,6 @@ async function pumpHeld(st: NodeState): Promise<void> {
   if (st.stopped || node !== st) return;
   for (const batch of [...st.held]) {
     if (st.stopped || node !== st) return;
-    node.inboundHop = batch.message.hop;
     const res = await deliverInboundPeerMessage(batch.message, {
       getCurrent: () => currentOf(),
       getDraftText: () => {
@@ -113,6 +122,11 @@ async function pumpHeld(st: NodeState): Promise<void> {
       receivedAt: batch.receivedAt,
       wakes: st.wakes,
     });
+    // Only a real delivery advances the relay chain — 'held'/'dropped'/'aside'
+    // never reached the agent, so they must not consume a hop.
+    if (res.outcome === 'woken' || res.outcome === 'injected') {
+      st.inboundHop = batch.message.hop;
+    }
     if (res.outcome !== 'held') st.held = st.held.filter((b) => b !== batch);
   }
   if (st.held.length === 0 && st.holdTimer !== undefined) {
@@ -261,11 +275,25 @@ function syncBridge(st: NodeState, others: PeerRecord[]): void {
         st.name,
         () => (st.inboundHop === undefined ? 0 : st.inboundHop + 1),
         (socket, frame) => requestPeer(socket, frame),
-        (text) => logOf(st, text)
+        (text) => {
+          // A persistent name collision would re-warn every tick — once per
+          // name is enough; the entry clears if the claim later succeeds.
+          if (st.claimWarned.has(record.name)) return;
+          st.claimWarned.add(record.name);
+          logOf(st, text);
+        }
       );
-      if (ok) st.claimed.add(record.name);
+      if (ok) {
+        st.claimed.add(record.name);
+        st.claimWarned.delete(record.name);
+      }
+    }
+    // Refresh activity every tick, not just on first claim — '(working)' and
+    // cwd go stale otherwise. Only for refs we own: a failed claim means a
+    // local agent holds the name and its activity is not ours to write.
+    if (st.claimed.has(record.name)) {
       try {
-        BRIDGE?.registry.setActivity?.(record.name, `${record.harness} instance pid ${record.pid} in ${record.cwd}${record.busy ? ' (working)' : ''}`);
+        BRIDGE?.registry.setActivity?.(record.name, peerActivityFor(record));
       } catch {
         // Activity updates are best-effort.
       }
@@ -275,6 +303,7 @@ function syncBridge(st: NodeState, others: PeerRecord[]): void {
     if (seen.has(name)) continue;
     if (BRIDGE !== undefined) releaseBridgedPeer(BRIDGE, name);
     st.claimed.delete(name);
+    st.claimWarned.delete(name);
   }
 }
 
@@ -319,6 +348,7 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
       sessionId: '',
       peers: [],
       claimed: new Set<string>(),
+      claimWarned: new Set<string>(),
       wakes: new Map<string, number[]>(),
       inboundHop: undefined,
       held: [],
@@ -342,7 +372,6 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
           ownName: () => (node !== undefined && !node.stopped ? node.name : ''),
           onMessage: async (msg) => {
             const live = node !== undefined && !node.stopped ? node : undefined;
-            if (live !== undefined) live.inboundHop = msg.hop;
             const res = await deliverInboundPeerMessage(msg, {
               getCurrent: () => currentOf(),
               getDraftText: () => {
@@ -355,6 +384,11 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
               },
               ...(live !== undefined ? { wakes: live.wakes } : {}),
             });
+            // Only a real delivery advances the relay chain — 'held'/'dropped'/
+            // 'aside' never reached the agent, so they must not consume a hop.
+            if ((res.outcome === 'woken' || res.outcome === 'injected') && live !== undefined) {
+              live.inboundHop = msg.hop;
+            }
             if (res.outcome === 'held' && live !== undefined) holdBatch(live, msg);
             return res.outcome;
           },
@@ -383,9 +417,12 @@ function ensureNode(pi: ExtensionHostLike, ctx: CommandContextLike): NodeState |
     return undefined;
   }
 }
-
 async function stopNode(st: NodeState): Promise<void> {
   st.stopped = true;
+  // A successor node for this same pid may already exist (session_switch →
+  // ensureNode after `node` was cleared). When it does, this teardown must
+  // not delete the successor's live record or socket file.
+  const hasSuccessor = (): boolean => node !== undefined && node !== st && !node.stopped;
   try {
     st.stopBeat?.();
   } catch {
@@ -400,9 +437,12 @@ async function stopNode(st: NodeState): Promise<void> {
     }
     st.holdTimer = undefined;
   }
+  if (st.held.length > 0) {
+    logOf(st, `peers: dropping ${st.held.length} held message(s) on shutdown`);
+  }
   st.held = [];
   try {
-    st.server?.stop();
+    st.server?.stop({ unlinkSocket: !hasSuccessor() });
   } catch {
     // Shutdown never throws.
   }
@@ -410,7 +450,9 @@ async function stopNode(st: NodeState): Promise<void> {
   if (BRIDGE !== undefined) {
     for (const name of st.claimed) releaseBridgedPeer(BRIDGE, name);
     st.claimed.clear();
+    st.claimWarned.clear();
   }
+  if (hasSuccessor()) return;
   try {
     await removePeerRecord(st.stateDir, st.pid);
   } catch {
@@ -445,8 +487,10 @@ export default function peersExtension(pi: ExtensionHostLike): void {
       return sendToPeer(to, message, {
         ownName: st?.name ?? '',
         hop: st?.inboundHop === undefined ? 0 : st.inboundHop + 1,
+        // st.peers includes our own record — filter by pid so a stale own
+        // name (post-/rename) can't route a send back to ourselves.
+        listPeers: async () => (st?.peers ?? []).filter((p) => p.pid !== st?.pid),
         ...(replyTo !== undefined ? { replyTo } : {}),
-        listPeers: async () => st?.peers ?? [],
         reap: (record) => {
           if (st !== undefined) void removePeerRecord(st.stateDir, record.pid);
         },
@@ -475,6 +519,17 @@ export default function peersExtension(pi: ExtensionHostLike): void {
     // A human prompt ends any relay chain: the next send starts at hop 0.
     // (No re-beat here: the context handler builds the roster from the last
     // good tick, so an async beat could never land in time for this prompt.)
+    if (node !== undefined && !node.stopped) node.inboundHop = undefined;
+  });
+  // `input` only fires for interactive TTY submits — on rpc/print/headless
+  // hosts it never runs, so `before_agent_start` (emitted by the agent loop
+  // in every mode) is the reset that keeps inboundHop from sticking forever.
+  // Peer injections are identified by the `[peer <name>]` prefix
+  // formatPeerText stamps on every delivery; a human prompt that happens to
+  // start with `[peer ` won't reset — conservative direction, acceptable.
+  pi.on('before_agent_start', (event) => {
+    const prompt = (event as { prompt?: unknown } | undefined)?.prompt;
+    if (typeof prompt === 'string' && prompt.startsWith('[peer ')) return;
     if (node !== undefined && !node.stopped) node.inboundHop = undefined;
   });
   pi.on('context', (event, ctx) => {

@@ -4,12 +4,6 @@
  * The class `name` doubles as a stable code the OMP wiring can branch on
  * (all names are unique and never minified away). `instanceof` also works.
  */
-export class LockError extends Error {
-    constructor(message) {
-        super(message);
-        this.name = 'LockError';
-    }
-}
 export class CorruptStateError extends Error {
     constructor(message) {
         super(message);
@@ -20,11 +14,5 @@ export class PeerNameError extends Error {
     constructor(message) {
         super(message);
         this.name = 'PeerNameError';
-    }
-}
-export class PeerNotFoundError extends Error {
-    constructor(message) {
-        super(message);
-        this.name = 'PeerNotFoundError';
     }
 }

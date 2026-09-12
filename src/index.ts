@@ -14,19 +14,8 @@ export {
   peerPath,
 } from './store/paths.js';
 export {
-  withRegistryLock,
-  mkdirLock,
-  unlockDir,
   durableWriteJson,
-  appendJsonl,
   readJsonFile,
-  readJsonlRecords,
-  countJsonlLines,
-  LOCK_STALE_MS,
-  LOCK_TIMEOUT_MS,
-  JSON_RETRY_DELAY_MS,
-  type LockOptions,
-  type TolerantReadOptions,
 } from './store/atomic.js';
 
 // Peer identity.
@@ -99,18 +88,15 @@ export {
 // Host seam.
 export {
   probeHost,
-  discoverOwnAgentId,
   listLocalAgentIds,
   claimBridgedPeer,
   readTitleSource,
   releaseBridgedPeer,
   peerActivityFor,
-  SETTINGS_STUB,
   type HostProbe,
   type HubBridge,
   type RegistryLike,
   type RegistryRefLike,
-  type ExecuteSendFn,
   type PeerRequestFn,
   type CommandContextLike,
   type ExtensionHostLike,

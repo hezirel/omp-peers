@@ -7,7 +7,7 @@
  */
 // Store layer.
 export { resolveStateDir, ensureStateDirs, peersDir, peerPath, } from './store/paths.js';
-export { withRegistryLock, mkdirLock, unlockDir, durableWriteJson, appendJsonl, readJsonFile, readJsonlRecords, countJsonlLines, LOCK_STALE_MS, LOCK_TIMEOUT_MS, JSON_RETRY_DELAY_MS, } from './store/atomic.js';
+export { durableWriteJson, readJsonFile, } from './store/atomic.js';
 // Peer identity.
 export { PEER_NAME_PATTERN, isValidPeerName, validatePeerName, defaultPeerName, peerNameFromSession, resolvePeerName, } from './peers/ids.js';
 // Presence.
@@ -20,7 +20,7 @@ export { sendToPeer } from './peers/outbound.js';
 // Roster.
 export { buildPeersNote, appendNoteToMessages, } from './peers/roster.js';
 // Host seam.
-export { probeHost, discoverOwnAgentId, listLocalAgentIds, claimBridgedPeer, readTitleSource, releaseBridgedPeer, peerActivityFor, SETTINGS_STUB, } from './peers/host.js';
+export { probeHost, listLocalAgentIds, claimBridgedPeer, readTitleSource, releaseBridgedPeer, peerActivityFor, } from './peers/host.js';
 // Commands (pure text formatters for tests/consumers).
 export { formatPeersText, formatPeerLine } from './commands/peers.js';
 // Agent tool surface (registered unconditionally in every mode).

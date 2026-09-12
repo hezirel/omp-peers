@@ -42,7 +42,9 @@ export function formatPeerText(from, body, opts = {}) {
 export function isWakeOverBudget(wakes, from, now, max = MAX_WAKES_PER_PEER_PER_HOUR) {
     const stamps = wakes.get(from) ?? [];
     const fresh = stamps.filter((t) => now - t < WAKE_WINDOW_MS);
-    if (fresh.length !== stamps.length)
+    if (fresh.length === 0)
+        wakes.delete(from);
+    else if (fresh.length !== stamps.length)
         wakes.set(from, fresh);
     return fresh.length >= max;
 }
@@ -52,12 +54,18 @@ export function recordPeerWake(wakes, from, now) {
     stamps.push(now);
     wakes.set(from, stamps.filter((t) => now - t < WAKE_WINDOW_MS));
 }
-function aside(pi, text) {
+// `followUp` queues without starting a turn in either host state — that is
+// the wake budget's intent; `aside` would still wake an idle session.
+// Returns the failure message when the host rejects the call.
+async function aside(pi, ctx, text) {
     try {
-        pi.sendUserMessage?.(text, { deliverAs: 'aside' });
+        await pi.sendUserMessage?.(text, { deliverAs: 'followUp' });
+        return undefined;
     }
-    catch {
-        // Aside fallback is best-effort.
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        warn(ctx, `peers: aside delivery failed (${message})`);
+        return message;
     }
 }
 function warn(ctx, text) {
@@ -90,13 +98,15 @@ export async function deliverInboundPeerMessage(frame, deps) {
     catch {
         willWake = true;
     }
-    if (willWake && isWakeOverBudget(wakes, from, now)) {
-        aside(cur.pi, text);
-        return { outcome: 'aside', detail: 'hourly wake budget exceeded' };
-    }
     if (typeof cur.pi.sendUserMessage !== 'function') {
         warn(cur.ctx, `peers: dropped a message from ${from} — the host has no sendUserMessage`);
         return { outcome: 'dropped', detail: 'no sendUserMessage on host' };
+    }
+    if (willWake && isWakeOverBudget(wakes, from, now)) {
+        const failure = await aside(cur.pi, cur.ctx, text);
+        if (failure !== undefined)
+            return { outcome: 'dropped', detail: failure };
+        return { outcome: 'aside', detail: 'hourly wake budget exceeded' };
     }
     // Typing protection: injecting while idle runs the host prompt flow, which
     // clears the peer's in-progress composer draft. While streaming the message
@@ -115,7 +125,7 @@ export async function deliverInboundPeerMessage(frame, deps) {
         return { outcome: 'held', detail: 'peer is typing' };
     }
     try {
-        cur.pi.sendUserMessage(text);
+        await cur.pi.sendUserMessage(text);
         if (willWake)
             recordPeerWake(wakes, from, now);
         return { outcome: willWake ? 'woken' : 'injected' };

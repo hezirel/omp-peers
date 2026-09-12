@@ -49,23 +49,26 @@ export function validatePeerName(name: string, opts: { localIds?: Iterable<strin
 
 /** Default address for an instance: sanitized `<basename(cwd)>-<pid>`. */
 export function defaultPeerName(cwd: string, pid: number): string {
+  // The pid suffix is computed first so the 24-char cap can never truncate
+  // pid digits — a truncated pid would collide across processes.
+  const suffix = `-${pid}`;
   const base =
     basename(cwd)
       .replace(/[^\w.-]+/g, '-')
       .replace(/^-+|-+$/g, '')
-      .slice(0, 24) || 'peer';
-  return `${base}-${pid}`.slice(0, 24);
+      .slice(0, 24 - suffix.length) || 'peer';
+  return `${base}${suffix}`.slice(0, 24);
 }
 
 /**
  * Derive a peer address from the host session name. A session name qualifies
- * as an address ONLY in raw form: non-empty and matching
- * {@link PEER_NAME_PATTERN} (1-24 of a-z A-Z 0-9 _ . -). Anything else falls
- * back to {@link defaultPeerName} with `rejected` carrying the raw name so
- * the caller can warn once — except model-generated titles (`titleSource`
- * `"auto"`), which fall back silently: they express no user intent and the
- * host rewrites them. Cross-process collisions still resolve later via
- * {@link resolvePeerName}.
+ * as an address ONLY in raw form: non-empty, matching
+ * {@link PEER_NAME_PATTERN} (1-24 of a-z A-Z 0-9 _ . -), and not the refused
+ * host name `Main`. Anything else falls back to {@link defaultPeerName} with
+ * `rejected` carrying the raw name so the caller can warn once — except
+ * model-generated titles (`titleSource` `"auto"`), which fall back silently:
+ * they express no user intent and the host rewrites them. Cross-process
+ * collisions still resolve later via {@link resolvePeerName}.
  */
 export function peerNameFromSession(
   raw: string | undefined,
@@ -77,7 +80,7 @@ export function peerNameFromSession(
   // and the host rewrites them (replan refresh), so adopting one would flap
   // the peer name mid-life. Fall back silently — no warning.
   if (opts.titleSource === 'auto') return { name: defaultPeerName(cwd, pid) };
-  if (raw !== undefined && raw !== '' && PEER_NAME_PATTERN.test(raw)) {
+  if (raw !== undefined && raw !== '' && PEER_NAME_PATTERN.test(raw) && raw !== REFUSED_HOST_NAME) {
     return { name: raw };
   }
   return raw !== undefined && raw !== ''

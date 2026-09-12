@@ -1,20 +1,25 @@
 /**
  * Peers acceptance test — runs against the COMPILED package (dist) with
  * OMP_PEERS_DIR pointed at a fresh temp dir.
- *
  * Covers: presence beat → roster lists both fake peers; outbound socket frame
  * → inbound path with a FAKE pi capturing `sendUserMessage` calls — attributed
  * `[peer <name>]` text delivered with default options (never a hardcoded
- * driving-agent name, no registry lookup); over-budget wakes queue as asides;
- * bridgeless hosts still deliver (as an aside); empty frames and missing
- * contexts drop without touching the host; hop-cap refusal; burst coalescing;
- * session-name adoption (`peerNameFromSession`) + first-wins collision;
- * stale reap.
- *
+ * driving-agent name, no registry lookup); over-budget wakes queue as
+ * followUps (deliverAs 'followUp' — queued, never waking); bridgeless hosts
+ * still deliver; empty frames, missing contexts, and sendUserMessage
+ * rejections drop without touching the host; hop-cap refusal both locally
+ * (before any socket I/O) and server-side; burst coalescing is per sender —
+ * concurrent senders stay separate batches and a coalesced hop takes
+ * Math.max; UTF-8 frames split mid-character still decode intact;
+ * session-name adoption (`peerNameFromSession`, incl. the refused `Main`)
+ * + first-wins collision; defaultPeerName never truncates the pid suffix;
+ * stale reap; forward-compat v>1 records skipped-not-unlinked; a live pid's
+ * socket file survives record reaping (unix only).
  * Plain Node ESM — no test-runner dependency (also runs under `node --test`).
  */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -163,6 +168,45 @@ describe('presence beat → roster lists both peers', () => {
     const empty = appendNoteToMessages([], 'NOTE');
     assert.deepEqual(empty, [{ role: 'user', content: 'NOTE' }]);
   });
+
+  it('skips a well-shaped v>1 record without unlinking it', async () => {
+    const dir = join(STATE, 'peers');
+    await mkdir(dir, { recursive: true });
+    const file = peerPath(49876, STATE);
+    await writeFile(
+      file,
+      JSON.stringify({
+        v: 2, pid: 49876, name: 'future', cwd: join(STATE, 'f'),
+        harness: 'omp', socket: peerSocketAddress(STATE, 49876),
+        startedAt: 1, beatAt: Date.now(), busy: false,
+      }) + '\n'
+    );
+    const live = await listLivePeers(STATE, 0, { isAlive: ALIVE });
+    assert.ok(!live.some((p) => p.name === 'future'));
+    // A future peer owns that file — skipping must not reap it.
+    await stat(file);
+  });
+
+  if (process.platform !== 'win32') {
+    it('keeps a stale-but-alive peer\'s socket file while delisting the record', async () => {
+      const dir = join(STATE, 'peers');
+      await mkdir(dir, { recursive: true });
+      const sock = peerSocketAddress(STATE, 49877);
+      await writeFile(sock, '');
+      await writeFile(
+        peerPath(49877, STATE),
+        JSON.stringify({
+          v: 1, pid: 49877, name: 'stale-alive', cwd: join(STATE, 'sa'), project: 'sa',
+          harness: 'omp', sessionId: '', model: '', socket: sock,
+          startedAt: 1, beatAt: Date.now() - PEER_TTL_MS - 1000, busy: false,
+        }) + '\n'
+      );
+      const live = await listLivePeers(STATE, 0, { isAlive: ALIVE });
+      assert.ok(!live.some((p) => p.name === 'stale-alive'));
+      // The pid is alive: unlinking its socket would strand it forever.
+      await stat(sock);
+    });
+  }
 });
 
 describe('outbound frame → inbound path', () => {
@@ -260,6 +304,143 @@ describe('outbound frame → inbound path', () => {
     }
   });
 
+  it('keeps concurrent senders as separate batches', async () => {
+    const addr = peerSocketAddress(STATE, 47555);
+    const seen = [];
+    const srv = startPeerServer({
+      address: addr,
+      ownName: () => 'multi',
+      onMessage: async (msg) => {
+        seen.push(msg);
+        return 'injected';
+      },
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const [r1, r2] = await Promise.all([
+        requestPeer(addr, { t: 'msg', from: 'sender-a', body: 'from A', hop: 0 }),
+        requestPeer(addr, { t: 'msg', from: 'sender-b', body: 'from B', hop: 0 }),
+      ]);
+      assert.equal(r1?.ok, true);
+      assert.equal(r2?.ok, true);
+      // Coalescing is per sender: two different `from` names never merge.
+      assert.equal(seen.length, 2);
+      const byFrom = new Map(seen.map((m) => [m.from, m.body]));
+      assert.equal(byFrom.get('sender-a'), 'from A');
+      assert.equal(byFrom.get('sender-b'), 'from B');
+    } finally {
+      srv.stop();
+    }
+  });
+
+  it('reports the max hop across a coalesced batch', async () => {
+    const addr = peerSocketAddress(STATE, 47556);
+    const seen = [];
+    const srv = startPeerServer({
+      address: addr,
+      ownName: () => 'hopmax',
+      onMessage: async (msg) => {
+        seen.push(msg);
+        return 'injected';
+      },
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const [r1, r2] = await Promise.all([
+        requestPeer(addr, { t: 'msg', from: 'hopper', body: 'first', hop: 0 }),
+        requestPeer(addr, { t: 'msg', from: 'hopper', body: 'second', hop: 3 }),
+      ]);
+      const outcomes = [r1?.outcome, r2?.outcome].sort();
+      assert.deepEqual(outcomes, ['coalesced', 'injected']);
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].hop, 3);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  it('refuses an over-hop send locally, before any socket I/O', async () => {
+    const record = {
+      v: 1, pid: 47998, name: 'ghost', cwd: '/w/g', project: 'g', harness: 'pi',
+      sessionId: '', model: '', socket: peerSocketAddress(STATE, 47998),
+      startedAt: 1, beatAt: Date.now(), busy: false,
+    };
+    const receipt = await sendToPeer('ghost', 'hi', {
+      ownName: 'alpha',
+      hop: 5,
+      listPeers: async () => [record],
+    });
+    // The refusal text proves no round-trip happened: a real attempt against
+    // this dead socket would report a connect failure instead.
+    assert.match(receipt, /Refused: this message is 5 hops from a human prompt and the limit is 4/);
+  });
+
+  it('maps a dropped receipt to failure text, not Delivered', async () => {
+    const addr = peerSocketAddress(STATE, 47557);
+    const srv = startPeerServer({
+      address: addr,
+      ownName: () => 'dropper',
+      onMessage: async () => 'dropped',
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const record = {
+        v: 1, pid: 47557, name: 'dropper', cwd: '/w/d', project: 'd', harness: 'pi',
+        sessionId: '', model: '', socket: addr, startedAt: 1, beatAt: Date.now(), busy: false,
+      };
+      const receipt = await sendToPeer('dropper', 'hi', {
+        ownName: 'alpha',
+        hop: 0,
+        listPeers: async () => [record],
+      });
+      assert.match(receipt, /dropped/);
+      assert.doesNotMatch(receipt, /Delivered/);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  it('decodes a UTF-8 frame split mid-character across writes', async () => {
+    const addr = peerSocketAddress(STATE, 47558);
+    let received;
+    const seenPromise = new Promise((resolve) => {
+      received = resolve;
+    });
+    const srv = startPeerServer({
+      address: addr,
+      ownName: () => 'utf8',
+      onMessage: async (msg) => {
+        received(msg);
+        return 'injected';
+      },
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    const socket = createConnection(addr);
+    try {
+      await new Promise((resolve, reject) => {
+        socket.once('connect', resolve);
+        socket.once('error', reject);
+      });
+      const frame = Buffer.from(
+        JSON.stringify({ t: 'msg', from: 'uni', body: 'em—dash', hop: 0 }) + '\n',
+        'utf8'
+      );
+      // '—' is E2 80 94; cut inside the sequence so no chunk boundary aligns.
+      const cut = frame.indexOf(0xe2) + 1;
+      socket.write(frame.subarray(0, cut));
+      await new Promise((r) => setTimeout(r, 50));
+      socket.write(frame.subarray(cut));
+      const msg = await Promise.race([
+        seenPromise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('no delivery')), 5000)),
+      ]);
+      assert.equal(msg.body, 'em—dash');
+    } finally {
+      socket.destroy();
+      srv.stop();
+    }
+  });
+
   it('stops the server', () => {
     server.stop();
   });
@@ -309,7 +490,7 @@ describe('inbound delivery against a fake host', () => {
     assert.equal(cur.sent.length, 0);
   });
 
-  it('queues over-budget wakes as asides on the current pi', async () => {
+  it('queues over-budget wakes as followUps on the current pi', async () => {
     const cur = fakeCtx('sess-beta');
     const now = Date.now();
     const wakes = new Map([['alpha', Array.from({ length: 20 }, (_, i) => now - i * 1000)]]);
@@ -320,7 +501,34 @@ describe('inbound delivery against a fake host', () => {
     assert.equal(res.outcome, 'aside');
     assert.equal(cur.sent.length, 1);
     assert.match(cur.sent[0].text, /^\[peer alpha\]/);
-    assert.equal(cur.sent[0].opts?.deliverAs, 'aside');
+    assert.equal(cur.sent[0].opts?.deliverAs, 'followUp');
+  });
+
+  it('queues the 21st wake from a sender as a followUp, not a turn', async () => {
+    const cur = fakeCtx('sess-beta');
+    const wakes = new Map();
+    const deps = { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }), wakes };
+    for (let i = 0; i < 20; i += 1) {
+      const res = await deliverInboundPeerMessage({ from: 'alpha', body: `wake ${i}` }, deps);
+      assert.equal(res.outcome, 'woken');
+    }
+    const res = await deliverInboundPeerMessage({ from: 'alpha', body: 'one too many' }, deps);
+    assert.equal(res.outcome, 'aside');
+    assert.equal(cur.sent.length, 21);
+    assert.equal(cur.sent[20].opts?.deliverAs, 'followUp');
+    // A queued followUp does not consume wake budget.
+    assert.equal((wakes.get('alpha') ?? []).length, 20);
+  });
+
+  it('drops the message when sendUserMessage rejects', async () => {
+    const cur = fakeCtx('sess-beta');
+    cur.pi.sendUserMessage = () => Promise.reject(new Error('boom'));
+    const res = await deliverInboundPeerMessage(
+      { from: 'alpha', body: 'hi' },
+      { getCurrent: () => ({ pi: cur.pi, ctx: cur.ctx }) }
+    );
+    assert.equal(res.outcome, 'dropped');
+    assert.match(res.detail ?? '', /boom/);
   });
 
   it('delivers on bridgeless hosts through sendUserMessage (no aside fallback)', async () => {
@@ -439,6 +647,12 @@ describe('peer identity: validation, collision, session-name adoption', () => {
     assert.match(defaultPeerName('/work/my proj', 123), /^[A-Za-z0-9_.-]{1,24}$/);
   });
 
+  it('never truncates the pid suffix in the default name', () => {
+    const name = defaultPeerName(`/${'x'.repeat(40)}`, 12345678);
+    assert.ok(name.length <= 24);
+    assert.ok(name.endsWith('-12345678'));
+  });
+
   it('adopts a raw valid session name and falls back otherwise', () => {
     assert.deepEqual(peerNameFromSession('backend', '/work/proj', 5), { name: 'backend' });
     const rejected = peerNameFromSession('My Agent', '/work/proj', 5);
@@ -464,6 +678,12 @@ describe('peer identity: validation, collision, session-name adoption', () => {
     // Explicit user names keep legacy adopt-or-warn behavior.
     assert.deepEqual(peerNameFromSession('backend', '/work/proj', 5, { titleSource: 'user' }), { name: 'backend' });
     assert.equal(peerNameFromSession('My Agent', '/work/proj', 5, { titleSource: 'user' }).rejected, 'My Agent');
+  });
+
+  it('refuses the host name Main as a peer address', () => {
+    const res = peerNameFromSession('Main', '/work/proj', 5);
+    assert.equal(res.name, defaultPeerName('/work/proj', 5));
+    assert.equal(res.rejected, 'Main');
   });
 
   it('reads the title source from the header or the manager', () => {

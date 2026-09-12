@@ -65,7 +65,7 @@ export interface ExtensionHostLike {
     }): void;
     sendUserMessage?: (content: string, options?: {
         deliverAs?: 'steer' | 'followUp' | 'aside';
-    }) => void;
+    }) => void | Promise<void>;
     getSessionName?: () => string | undefined;
     logger?: {
         warn(message: string): void;
@@ -92,31 +92,8 @@ export interface RegistryLike {
     unregister(id: string): boolean;
     setActivity?: (id: string, activity: string) => void;
 }
-/**
- * The host's own `hub` send path (`tools/hub/messaging` `executeSend`), which
- * drives the host's real `IrcBus`: waiter-first so an awaited peer reply
- * resolves, then `session.deliverIrcMessage` into the recipient session.
- */
-export type ExecuteSendFn = (deps: {
-    registry: unknown;
-    senderId: string;
-    settings: unknown;
-    sessionFileHint: string | null;
-}, params: {
-    to: string;
-    message: string;
-    replyTo?: string;
-}) => Promise<{
-    details?: {
-        receipts?: Array<{
-            outcome?: string;
-            error?: string;
-        }>;
-    };
-}>;
 export interface HubBridge {
     registry: RegistryLike;
-    send: ExecuteSendFn;
 }
 /**
  * True when the probed registry is the HOST's own (shared) copy. The host
@@ -127,14 +104,6 @@ export interface HubBridge {
  * refs or promise `hub send` in the roster.
  */
 export declare function bridgeResolvesHost(bridge: HubBridge): boolean;
-/**
- * `executeSend` reads `settings` only to resolve an await timeout
- * (`params.await`), which the inbound path never sets. A real
- * SettingsManager is unreachable from an extension, so this stands in.
- */
-export declare const SETTINGS_STUB: {
-    get: (_key?: string) => undefined;
-};
 export type HostProbe = {
     kind: 'hub-bridge';
     bridge: HubBridge;
@@ -148,14 +117,6 @@ export type HostProbe = {
  * The result caches host MODULE handles only — never any session object.
  */
 export declare function probeHost(): Promise<HostProbe>;
-/**
- * Find OURSELVES in the HOST registry: first by live session object identity
- * (when the host exposes it on ctx), then by session-file/session-id match
- * against `sessionManager.getSessionId()`. NEVER by name — peer names are
- * explicitly non-unique across processes. Returns undefined when nothing
- * matches; the caller drops (never misdelivers).
- */
-export declare function discoverOwnAgentId(registry: RegistryLike, ctx: CommandContextLike): string | undefined;
 /**
  * `peerSocket` marker). Used to keep a session name from colliding with a
  * live subagent address during peer-name deconfliction.

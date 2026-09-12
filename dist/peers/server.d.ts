@@ -39,7 +39,10 @@ export interface PeerServerOptions {
 }
 export interface PeerServerHandle {
     address: string;
-    stop(): void;
+    /** `unlinkSocket: false` leaves the unix socket path for a successor node. */
+    stop(opts?: {
+        unlinkSocket?: boolean;
+    }): void;
 }
 /**
  * Serve one peer address. `onMessage` runs once per coalesced batch and its

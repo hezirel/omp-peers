@@ -53,9 +53,11 @@ export interface PeerServerOptions {
 
 export interface PeerServerHandle {
   address: string;
-  stop(): void;
+  /** `unlinkSocket: false` leaves the unix socket path for a successor node. */
+  stop(opts?: { unlinkSocket?: boolean }): void;
 }
 
+// Hop is sender-reported: it bounds honest relay chains, not forged ones.
 function normalizeHop(hop: unknown): number {
   return typeof hop === 'number' && Number.isFinite(hop) ? Math.max(0, Math.trunc(hop)) : 0;
 }
@@ -74,7 +76,8 @@ function reply(socket: Socket, payload: PeerReply): void {
  */
 export function startPeerServer(opts: PeerServerOptions): PeerServerHandle {
   const coalesceMs = opts.coalesceMs ?? COALESCE_MS;
-  const pending = new Map<string, { bodies: string[]; replyTo?: string; hop: number }>();
+  const pending = new Map<string, { bodies: string[]; replyTo?: string; hop: number; first: Socket }>();
+  const sockets = new Set<Socket>();
   let stopped = false;
   let server: Server | undefined;
 
@@ -84,7 +87,7 @@ export function startPeerServer(opts: PeerServerOptions): PeerServerHandle {
       const wait = setTimeout(resolve, coalesceMs);
       wait.unref?.();
     });
-    const batch = pending.get(from) ?? { bodies: [], hop: 0 };
+    const batch = pending.get(from) ?? { bodies: [], hop: 0, first };
     pending.delete(from);
     const bodies = batch.bodies.length > 0 ? batch.bodies : [''];
     const body =
@@ -102,7 +105,8 @@ export function startPeerServer(opts: PeerServerOptions): PeerServerHandle {
       });
       reply(first, { ok: true, outcome });
     } catch (err) {
-      pending.delete(from);
+      // `from` was already deleted above — deleting again could eat a NEWER
+      // pending entry that arrived while onMessage was failing.
       reply(first, { ok: false, error: err instanceof Error ? err.message : String(err) });
     }
   }
@@ -145,7 +149,7 @@ export function startPeerServer(opts: PeerServerOptions): PeerServerHandle {
     const known = pending.get(frame.from);
     if (known) {
       known.bodies.push(frame.body);
-      known.hop = Math.min(known.hop, hop);
+      known.hop = Math.max(known.hop, hop);
       reply(socket, { ok: true, outcome: 'coalesced' });
       return;
     }
@@ -153,11 +157,19 @@ export function startPeerServer(opts: PeerServerOptions): PeerServerHandle {
       bodies: [frame.body],
       ...(typeof frame.replyTo === 'string' && frame.replyTo !== '' ? { replyTo: frame.replyTo } : {}),
       hop,
+      first: socket,
     });
     void deliverBatch(frame.from, socket);
   }
 
   function accept(socket: Socket): void {
+    sockets.add(socket);
+    socket.on('close', () => {
+      sockets.delete(socket);
+    });
+    // Decode multibyte chars across chunk boundaries — String(chunk) per
+    // chunk turns a split sequence into U+FFFD and breaks JSON.parse.
+    socket.setEncoding('utf8');
     socket.on('error', () => {
       try {
         socket.destroy();
@@ -174,8 +186,8 @@ export function startPeerServer(opts: PeerServerOptions): PeerServerHandle {
       }
     });
     let buffer = '';
-    socket.on('data', (chunk: unknown) => {
-      buffer += String(chunk);
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
       if (buffer.length > MAX_FRAME_BYTES) {
         reply(socket, { ok: false, error: 'frame too large' });
         try {
@@ -225,7 +237,7 @@ export function startPeerServer(opts: PeerServerOptions): PeerServerHandle {
 
   return {
     address,
-    stop: (): void => {
+    stop: (stopOpts?: { unlinkSocket?: boolean }): void => {
       stopped = true;
       try {
         server?.close();
@@ -233,7 +245,28 @@ export function startPeerServer(opts: PeerServerOptions): PeerServerHandle {
         // Close is best-effort.
       }
       server = undefined;
-      if (process.platform !== 'win32') {
+      // Senders parked in the coalesce window get a real reply instead of
+      // hanging until their request timeout; end() flushes the reply where
+      // destroy() could discard it.
+      for (const entry of pending.values()) {
+        reply(entry.first, { ok: false, error: 'peer shutting down' });
+        try {
+          entry.first.end();
+        } catch {
+          // Shutdown is best-effort.
+        }
+        sockets.delete(entry.first);
+      }
+      pending.clear();
+      for (const socket of sockets) {
+        try {
+          socket.destroy();
+        } catch {
+          // Destroy is best-effort.
+        }
+      }
+      sockets.clear();
+      if (process.platform !== 'win32' && (stopOpts?.unlinkSocket ?? true)) {
         void rm(address, { force: true }).catch(() => undefined);
       }
     },
@@ -253,6 +286,9 @@ export function requestPeer(
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
     const socket = createConnection(address);
+    // Same split-multibyte hazard as the server side: replies can carry
+    // non-ASCII, so decode at the socket instead of per chunk.
+    socket.setEncoding('utf8');
     const finish = (value: PeerReply | undefined): void => {
       if (settled) return;
       settled = true;
@@ -277,10 +313,13 @@ export function requestPeer(
       }
     });
     let buffer = '';
-    socket.on('data', (chunk: unknown) => {
-      buffer += String(chunk);
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      if (buffer.length > MAX_FRAME_BYTES) {
+        finish({ ok: false, error: 'response too large' });
+        return;
+      }
       const index = buffer.indexOf('\n');
-      if (index === -1) return;
       try {
         finish(JSON.parse(buffer.slice(0, index)) as PeerReply);
       } catch {

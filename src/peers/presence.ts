@@ -8,7 +8,7 @@
  * Shutdown unlinks the own record.
  */
 
-import { chmod, readdir, rm } from 'node:fs/promises';
+import { chmod, readdir, rm, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import { durableWriteJson, readJsonFile } from '../store/atomic.js';
@@ -31,11 +31,11 @@ export interface BeatInput {
   busy?: boolean;
 }
 
-function isPeerRecord(value: unknown): value is PeerRecord {
+/** Field shape shared by every schema version (version gate lives in isPeerRecord). */
+function hasPeerRecordShape(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null) return false;
   const r = value as Record<string, unknown>;
   return (
-    r['v'] === 1 &&
     typeof r['pid'] === 'number' &&
     typeof r['name'] === 'string' &&
     typeof r['cwd'] === 'string' &&
@@ -44,6 +44,10 @@ function isPeerRecord(value: unknown): value is PeerRecord {
     typeof r['startedAt'] === 'number' &&
     typeof r['beatAt'] === 'number'
   );
+}
+
+function isPeerRecord(value: unknown): value is PeerRecord {
+  return hasPeerRecordShape(value) && value['v'] === 1;
 }
 
 function defaultIsAlive(pid: number): boolean {
@@ -73,11 +77,22 @@ export async function writePeerBeat(input: BeatInput): Promise<PeerRecord> {
     busy: input.busy ?? false,
   };
   const file = peerPath(pid, input.stateDir);
-  await durableWriteJson(file, record);
+  // chmod only on first write — the file keeps its mode across refreshes,
+  // so re-chmodding every 15s beat is wasted syscalls.
+  let isNew = true;
   try {
-    await chmod(file, 0o600);
+    await stat(file);
+    isNew = false;
   } catch {
-    // Best effort: the parent dir is already mode-restricted on creation.
+    isNew = true;
+  }
+  await durableWriteJson(file, record);
+  if (isNew) {
+    try {
+      await chmod(file, 0o600);
+    } catch {
+      // Best effort: the parent dir is already mode-restricted on creation.
+    }
   }
   return record;
 }
@@ -89,10 +104,12 @@ export interface ListPeersOptions {
 }
 
 /**
- * List live peers, reaping stale records on sight: unparseable/wrong-shape
- * files, dead pids, and beats older than the TTL are unlinked (plus the
- * abandoned unix socket, when the address names one inside the peers dir).
- * Results sort by name.
+ * List live peers, reaping stale records on sight: wrong-shape files, dead
+ * pids, and beats older than the TTL are unlinked. Unparseable files are
+ * left alone (torn reads), as are well-shaped records from a newer schema
+ * version. A unix socket is unlinked only when its pid is confirmed dead —
+ * a live peer keeps its socket even on a stale beat — and orphan
+ * `<pid>.sock` files with no live owner are reaped too. Results sort by name.
  */
 export async function listLivePeers(
   stateDir: string,
@@ -109,7 +126,12 @@ export async function listLivePeers(
   const now = opts.now ?? Date.now();
   const isAlive = opts.isAlive ?? defaultIsAlive;
   const live: PeerRecord[] = [];
+  const sockNames: string[] = [];
   for (const name of names) {
+    if (name.endsWith('.sock')) {
+      sockNames.push(name);
+      continue;
+    }
     if (!name.endsWith('.json')) continue;
     const file = join(dir, name);
     let parsed: unknown;
@@ -119,7 +141,11 @@ export async function listLivePeers(
       continue;
     }
     if (!isPeerRecord(parsed)) {
-      await rm(file, { force: true }).catch(() => undefined);
+      // Forward-compat: a well-shaped record with a newer `v` is skipped,
+      // not unlinked — a future peer owns it. Malformed files get reaped.
+      if (!(hasPeerRecordShape(parsed) && typeof parsed['v'] === 'number' && parsed['v'] > 1)) {
+        await rm(file, { force: true }).catch(() => undefined);
+      }
       continue;
     }
     if (parsed.pid !== selfPid) {
@@ -131,7 +157,10 @@ export async function listLivePeers(
       }
       if (!alive || now - parsed.beatAt > PEER_TTL_MS) {
         await rm(file, { force: true }).catch(() => undefined);
-        if (process.platform !== 'win32' && parsed.socket.startsWith(`${dir}/`)) {
+        // Only a confirmed-dead pid loses its socket: a live process with a
+        // stalled beat keeps it — unlinking a live peer's socket would
+        // strand it (ENOENT forever); its next beat rewrites the record.
+        if (!alive && process.platform !== 'win32' && parsed.socket.startsWith(`${dir}/`)) {
           await rm(parsed.socket, { force: true }).catch(() => undefined);
         }
         continue;
@@ -139,15 +168,45 @@ export async function listLivePeers(
     }
     live.push(parsed);
   }
+  if (process.platform !== 'win32') {
+    // Orphan sockets: a dead pid's `<pid>.sock` survives record reaping when
+    // the record was already gone. Skip names that don't parse to a pid.
+    const livePids = new Set(live.map((p) => p.pid));
+    for (const name of sockNames) {
+      const base = name.slice(0, -'.sock'.length);
+      if (!/^\d+$/.test(base)) continue;
+      const pid = Number(base);
+      if (livePids.has(pid)) continue;
+      let alive = true;
+      try {
+        alive = isAlive(pid);
+      } catch {
+        alive = false;
+      }
+      if (!alive) await rm(join(dir, name), { force: true }).catch(() => undefined);
+    }
+  }
   live.sort((a, b) => a.name.localeCompare(b.name));
   return live;
 }
 
-/** Remove one presence record (+ its unix socket on non-Windows). */
-export async function removePeerRecord(stateDir: string, pid: number): Promise<void> {
+/** Remove one presence record (+ its unix socket on non-Windows, dead pids only). */
+export async function removePeerRecord(
+  stateDir: string,
+  pid: number,
+  opts: { isAlive?: (pid: number) => boolean } = {}
+): Promise<void> {
   const dir = peersDir(stateDir);
   await rm(join(dir, `${pid}.json`), { force: true }).catch(() => undefined);
-  if (process.platform !== 'win32') {
+  // The socket belongs to the pid, not the record: unlinking a live pid's
+  // socket strands it. A live owner's own cleanup runs via server.stop().
+  let alive = true;
+  try {
+    alive = (opts.isAlive ?? defaultIsAlive)(pid);
+  } catch {
+    alive = false;
+  }
+  if (process.platform !== 'win32' && !alive) {
     await rm(join(dir, `${pid}.sock`), { force: true }).catch(() => undefined);
   }
 }

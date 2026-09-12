@@ -30,14 +30,18 @@ export interface ListPeersOptions {
     isAlive?: (pid: number) => boolean;
 }
 /**
- * List live peers, reaping stale records on sight: unparseable/wrong-shape
- * files, dead pids, and beats older than the TTL are unlinked (plus the
- * abandoned unix socket, when the address names one inside the peers dir).
- * Results sort by name.
+ * List live peers, reaping stale records on sight: wrong-shape files, dead
+ * pids, and beats older than the TTL are unlinked. Unparseable files are
+ * left alone (torn reads), as are well-shaped records from a newer schema
+ * version. A unix socket is unlinked only when its pid is confirmed dead —
+ * a live peer keeps its socket even on a stale beat — and orphan
+ * `<pid>.sock` files with no live owner are reaped too. Results sort by name.
  */
 export declare function listLivePeers(stateDir: string, selfPid: number, opts?: ListPeersOptions): Promise<PeerRecord[]>;
-/** Remove one presence record (+ its unix socket on non-Windows). */
-export declare function removePeerRecord(stateDir: string, pid: number): Promise<void>;
+/** Remove one presence record (+ its unix socket on non-Windows, dead pids only). */
+export declare function removePeerRecord(stateDir: string, pid: number, opts?: {
+    isAlive?: (pid: number) => boolean;
+}): Promise<void>;
 export interface PresenceBeatOptions {
     intervalMs?: number;
     onError?: (err: unknown) => void;

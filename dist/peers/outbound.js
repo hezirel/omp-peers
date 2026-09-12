@@ -4,7 +4,7 @@
  * to a human-readable text receipt. Dead sockets reap the stale presence
  * record on sight so the next `/peers` is accurate.
  */
-import { requestPeer } from './server.js';
+import { MAX_HOPS, requestPeer } from './server.js';
 /** Send one message to the peer named `to`. Never throws. */
 export async function sendToPeer(to, message, deps) {
     const name = to?.trim() ?? '';
@@ -15,6 +15,12 @@ export async function sendToPeer(to, message, deps) {
         return 'Broadcasts are not supported in v1 — address one peer by name (see `/peers`).';
     if (name === deps.ownName)
         return 'Cannot send a message to yourself.';
+    const hop = deps.hop ?? 0;
+    // Same refusal the server would send — checked locally so an over-limit
+    // chain never costs a socket round-trip.
+    if (hop > MAX_HOPS) {
+        return `Refused: this message is ${hop} hops from a human prompt and the limit is ${MAX_HOPS}. The chain has to end here — do not resend. Ask your user if it must continue.`;
+    }
     try {
         const peers = await deps.listPeers();
         const record = peers.find((p) => p.name === name);
@@ -27,7 +33,7 @@ export async function sendToPeer(to, message, deps) {
             from: deps.ownName,
             body,
             ...(deps.replyTo !== undefined && deps.replyTo !== '' ? { replyTo: deps.replyTo } : {}),
-            hop: deps.hop ?? 0,
+            hop,
         });
         if (reply === undefined) {
             try {
@@ -40,6 +46,12 @@ export async function sendToPeer(to, message, deps) {
         }
         if (!reply.ok)
             return `Delivery to ${name} failed: ${reply.error ?? 'unknown error'}`;
+        if (reply.outcome === 'dropped')
+            return `Delivery to ${name} failed (dropped by receiver)`;
+        if (reply.outcome === 'aside')
+            return `Queued at ${name} (wake budget reached — delivers without waking)`;
+        if (reply.outcome === 'coalesced')
+            return `Delivered to ${name} (coalesced into a batch). Its reply will arrive as a peer message.`;
         if (reply.outcome === 'held')
             return `Held at ${name} (typing) — delivers when they submit. Its reply will arrive as a peer message.`;
         return `Delivered to ${name} (${reply.outcome ?? 'injected'}). Its reply will arrive as a peer message.`;
