@@ -11,6 +11,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { formatBeatAge } from './peers/presence.js';
+import { displayTitle } from './peers/roster.js';
 export function registerPeerSendTool(pi, deps) {
     pi.registerTool({
         name: 'peer_send',
@@ -107,7 +108,7 @@ export function registerPeerStatusTool(pi, deps) {
                 }
                 const now = deps.now?.() ?? Date.now();
                 const lines = [
-                    `\`${peer.name}\` is ${peer.busy ? 'working' : 'idle'} in ${peer.cwd} · beat ${formatBeatAge(peer.beatAt, now)}.`,
+                    `\`${peer.name}\`${displayTitle(peer)} is ${peer.busy ? 'working' : 'idle'} in ${peer.cwd} · beat ${formatBeatAge(peer.beatAt, now)}.`,
                     `Activity: ${peer.activity ?? '—'}`,
                 ];
                 if (peer.todos !== undefined && peer.todos.length > 0) {
@@ -130,7 +131,7 @@ async function statusHintFor(to, listPeers, now) {
         const peer = peers.find((p) => p.name === to);
         if (peer === undefined)
             return `No live peer named "${to}". Use /peers to see who is live.`;
-        return `\`${peer.name}\` is ${peer.busy ? 'working' : 'idle'} · ${peer.activity ?? 'no activity'} · ${peer.todos?.length ?? 0} todos · beat ${formatBeatAge(peer.beatAt, now)}.`;
+        return `\`${peer.name}\`${displayTitle(peer)} is ${peer.busy ? 'working' : 'idle'} · ${peer.activity ?? 'no activity'} · ${peer.todos?.length ?? 0} todos · beat ${formatBeatAge(peer.beatAt, now)}.`;
     }
     catch {
         return 'Use peer_status for details.';
@@ -194,7 +195,7 @@ export function registerPeerRequestTool(pi, deps) {
                     // Not a queueable delivery — e.g. unknown peer, refused, or it
                     // matched a pending request on the far end and was consumed.
                     pending.delete(replyTo);
-                    reject(new Error('not delivered'));
+                    resolve(receipt); // never reject an unawaited promise — unhandledRejection terminates bun (crash 2026-09-22)
                     return { content: [{ type: 'text', text: receipt }] };
                 }
                 if (!pending.has(replyTo)) {

@@ -19,6 +19,9 @@
  * agent id is re-discovered per delivery and cross-checked against
  * `sessionManager.getSessionId()`.
  */
+import { readFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { registerPeersCommand } from './commands/peers.js';
 import { bridgeResolvesHost, claimBridgedPeer, listLocalAgentIds, peerActivityFor, probeHost, readNativeTodos, readTitleSource, releaseBridgedPeer, } from './peers/host.js';
 import { defaultPeerName, isValidPeerName, peerNameFromSession, resolvePeerName } from './peers/ids.js';
@@ -36,6 +39,33 @@ const MODE = probe.kind === 'hub-bridge' ? 'hub' : 'tools';
 const BRIDGE = probe.kind === 'hub-bridge' ? probe.bridge : undefined;
 /** How long a started tool keeps naming the peer's activity before busy/idle takes over. */
 const ACTIVITY_FRESH_MS = 120_000;
+/** Persisted view scope: `<stateDir>/scope` holds 'cwd'|'all'; OMP_PEERS_SCOPE=all seeds when absent. */
+function readScope(stateDir) {
+    try {
+        const value = readFileSync(join(stateDir, 'scope'), 'utf8').trim();
+        if (value === 'cwd' || value === 'all')
+            return value;
+    }
+    catch {
+        // absent or unreadable — fall through to the default
+    }
+    return process.env.OMP_PEERS_SCOPE === 'all' ? 'all' : 'cwd';
+}
+async function persistScope(st) {
+    try {
+        await writeFile(join(st.stateDir, 'scope'), `${st.scope}\n`, 'utf8');
+    }
+    catch {
+        // best effort — a lost write just re-defaults next boot
+    }
+}
+/** Peers visible in roster/hub/`/peers` under the current scope. peer_send stays global by name. */
+function scopedPeers(st) {
+    const others = st.peers.filter((p) => p.pid !== st.pid);
+    if (st.scope === 'all')
+        return others;
+    return others.filter((p) => p.cwd === st.cwd);
+}
 /** One node per process, even when several sessions load the extension. */
 let node;
 /** The live node for this process, if one is running. */
@@ -125,6 +155,7 @@ function logOf(st, text) {
 async function tick(st) {
     const ctx = st.current?.ctx;
     const cwd = typeof ctx?.cwd === 'string' && ctx.cwd !== '' ? ctx.cwd : process.cwd();
+    st.cwd = cwd;
     let sessionId = '';
     try {
         sessionId = ctx?.sessionManager?.getSessionId?.() ?? '';
@@ -224,7 +255,9 @@ async function tick(st) {
             socket: st.socketAddress,
             startedAt: st.startedAt,
             busy,
-            ...(activity !== undefined && activity !== '' ? { activity } : {}),
+            // Display-only: the session title rides the beat even when auto
+            // (titleSource gating is for ADDRESSES, not metadata).
+            ...(sessionName !== undefined && sessionName !== '' ? { title: sessionName } : {}),
             ...(st.nativeTodos.length > 0 ? { todos: st.nativeTodos } : {}),
         });
     }
@@ -237,7 +270,7 @@ async function tick(st) {
             ? [...(others ?? lastOthers), own].sort((a, b) => a.name.localeCompare(b.name))
             : (others ?? lastOthers);
     if (BRIDGE !== undefined && others !== undefined)
-        syncBridge(st, others);
+        syncBridge(st, scopedPeers(st));
 }
 function syncBridge(st, others) {
     // A foreign registry copy (compiled omp binary) never resolves the host's
@@ -340,8 +373,10 @@ function ensureNode(pi, ctx) {
             nativeTodos: [],
             nativeActivity: undefined,
             pendingReplies: new Map(),
+            scope: readScope(stateDir),
+            cwd: typeof ctx.cwd === 'string' && ctx.cwd !== '' ? ctx.cwd : process.cwd(),
         };
-        st.name = defaultPeerName(typeof ctx.cwd === 'string' && ctx.cwd !== '' ? ctx.cwd : process.cwd(), st.pid);
+        st.name = defaultPeerName(st.cwd, st.pid);
         node = st;
         void ensureStateDirs(stateDir)
             .then(() => {
@@ -485,9 +520,23 @@ export default function peersExtension(pi) {
             catch {
                 // Snapshot stays last-good.
             }
-            return { ownName: st.name, mode: rosterMode(), peers: st.peers, held: st.held.length };
+            const visible = scopedPeers(st);
+            return {
+                ownName: st.name,
+                mode: rosterMode(),
+                peers: visible,
+                hidden: st.peers.filter((p) => p.pid !== st.pid).length - visible.length,
+                held: st.held.length,
+                scope: st.scope,
+            };
         }
         return { ownName: '', mode: rosterMode(), peers: [], held: 0 };
+    }, (value) => {
+        const st = liveNode();
+        if (st === undefined)
+            return;
+        st.scope = value;
+        void persistScope(st);
     });
     // NOTE: `peer_send` registers UNCONDITIONALLY in every mode. The bridge may
     // bind a foreign registry copy on compiled hosts, making native `hub` refs
@@ -660,8 +709,9 @@ export default function peersExtension(pi) {
             });
         }
         // Always inject: the agent learns its OWN peer name here, even solo.
-        const others = st.peers.filter((p) => p.pid !== st.pid);
-        const note = buildPeersNote(st.name, others, rosterMode());
+        const others = scopedPeers(st);
+        const hidden = st.peers.filter((p) => p.pid !== st.pid).length - others.length;
+        const note = buildPeersNote(st.name, others, rosterMode(), hidden);
         const payload = event;
         if (payload === undefined || !Array.isArray(payload.messages))
             return undefined;

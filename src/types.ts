@@ -65,6 +65,8 @@ export interface PeerRecord {
   busy: boolean;
   /** Optional short activity description published by the owner. */
   activity?: string;
+  /** Optional display title (host session title) — metadata only, never an address. */
+  title?: string;
   /** Optional published todo list. */
   todos?: PeerTodo[];
 }

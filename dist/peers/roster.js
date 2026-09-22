@@ -7,8 +7,19 @@
  * bridge reference). The note is always injected — even with no peers — so
  * the agent always knows its own peer name; rows degrade to a solo line.
  */
+/**
+ * Quoted display title for peer rows: empty when absent, equal to the
+ * address (user-renamed sessions), or blank — never an address, so auto
+ * titles are fine here. Capped at 60 chars to bound per-prompt note cost.
+ */
+export function displayTitle(peer) {
+    const title = peer.title?.trim();
+    if (!title || title === peer.name)
+        return '';
+    return ` "${title.length > 60 ? `${title.slice(0, 57)}…` : title}"`;
+}
 /** Identity line + contact rule + peer definition + one row per peer (solo compacts to two lines). */
-export function buildPeersNote(ownName, peers, mode) {
+export function buildPeersNote(ownName, peers, mode, hidden = 0) {
     const rows = peers.length === 0
         ? '- (no other peers are live right now)'
         : [...peers]
@@ -17,22 +28,30 @@ export function buildPeersNote(ownName, peers, mode) {
             // pid in every row: suffixed collision names (e.g. `test-peer`
             // vs `test-peer-22148`) must never be mistakable for self.
             const busy = peer.busy ? ' (working)' : ' (idle)';
+            const title = displayTitle(peer);
             const activity = peer.activity ? ` · ${peer.activity}` : '';
             const todoCount = peer.todos?.length
                 ? ` · ${peer.todos.length} todo${peer.todos.length === 1 ? '' : 's'}`
                 : '';
-            return `- \`${peer.name}\` — ${peer.harness}(${peer.pid}) in ${peer.cwd}${busy}${activity}${todoCount}`;
+            return `- \`${peer.name}\`${title} — ${peer.harness}(${peer.pid}) in ${peer.cwd}${busy}${activity}${todoCount}`;
         })
             .join('\n');
     const contact = 'Do NOT message peers unless the user explicitly asks, or to reply to an inbound peer message.';
     const what = 'A peer is another live agent instance on this machine. Its messages reach you as user text starting with `[peer <name>]:` — that is the peer speaking, not your user.';
-    if (peers.length === 0)
+    const hint = hidden > 0 ? `- (+${hidden} other-project peer${hidden === 1 ? '' : 's'} hidden — \`/peers scope all\` to show)` : '';
+    if (peers.length === 0 && hidden === 0)
         return [`<peers>`, `You are \`${ownName}\`. No other peers are live right now.`, `</peers>`].join('\n');
+    if (peers.length === 0)
+        return [`<peers>`, `You are \`${ownName}\`. No same-project peers are live right now.`, hint, `</peers>`]
+            .filter((line) => line !== '')
+            .join('\n');
     const how = mode === 'hub'
         ? '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. Native `hub` op=send is best-effort only. `peer_status` and `peer_request` are available agent tools.'
         : '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. `peer_status` and `peer_request` are available agent tools.';
     const naming = 'Names are session names (`/rename <name>`); valid 1-24 [a-zA-Z0-9_.-], else `<dir>-<pid>`. Auto-titles never qualify — `/rename` to claim an address.';
-    return [`<peers>`, `You are \`${ownName}\`. ${contact}`, what, how, naming, '', rows, `</peers>`].join('\n');
+    return [`<peers>`, `You are \`${ownName}\`. ${contact}`, what, how, naming, '', rows, hint, `</peers>`]
+        .filter((line) => line !== '')
+        .join('\n');
 }
 /**
  * Fold `note` into the last user message (string content is suffixed, array

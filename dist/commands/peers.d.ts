@@ -13,8 +13,12 @@ export interface PeersSnapshot {
     peers: PeerRecord[];
     /** Batches held while the peer types — shown so held mail is visible. */
     held?: number;
+    /** Other-project peers hidden by the 'cwd' scope. */
+    hidden?: number;
+    /** Active view scope. */
+    scope?: 'cwd' | 'all';
 }
 /** `backend · omp(1234) · C:\work · model-id · working · beat 3s ago`. */
 export declare function formatPeerLine(p: PeerRecord, now: number, selfName: string): string;
 export declare function formatPeersText(snap: PeersSnapshot, now: number): string;
-export declare function registerPeersCommand(pi: ExtensionHostLike, getSnapshot: () => Promise<PeersSnapshot>): void;
+export declare function registerPeersCommand(pi: ExtensionHostLike, getSnapshot: () => Promise<PeersSnapshot>, setScope?: (value: 'cwd' | 'all') => void): void;
