@@ -11,7 +11,6 @@
  */
 import { randomUUID } from 'node:crypto';
 import { formatBeatAge } from './peers/presence.js';
-import { displayTitle } from './peers/roster.js';
 export function registerPeerSendTool(pi, deps) {
     pi.registerTool({
         name: 'peer_send',
@@ -108,7 +107,7 @@ export function registerPeerStatusTool(pi, deps) {
                 }
                 const now = deps.now?.() ?? Date.now();
                 const lines = [
-                    `\`${peer.name}\`${displayTitle(peer)} is ${peer.busy ? 'working' : 'idle'} in ${peer.cwd} · beat ${formatBeatAge(peer.beatAt, now)}.`,
+                    `\`${peer.name}\` is ${peer.busy ? 'working' : 'idle'} in ${peer.cwd} · beat ${formatBeatAge(peer.beatAt, now)}.`,
                     `Activity: ${peer.activity ?? '—'}`,
                 ];
                 if (peer.todos !== undefined && peer.todos.length > 0) {
@@ -131,7 +130,7 @@ async function statusHintFor(to, listPeers, now) {
         const peer = peers.find((p) => p.name === to);
         if (peer === undefined)
             return `No live peer named "${to}". Use /peers to see who is live.`;
-        return `\`${peer.name}\`${displayTitle(peer)} is ${peer.busy ? 'working' : 'idle'} · ${peer.activity ?? 'no activity'} · ${peer.todos?.length ?? 0} todos · beat ${formatBeatAge(peer.beatAt, now)}.`;
+        return `\`${peer.name}\` is ${peer.busy ? 'working' : 'idle'} · ${peer.activity ?? 'no activity'} · ${peer.todos?.length ?? 0} todos · beat ${formatBeatAge(peer.beatAt, now)}.`;
     }
     catch {
         return 'Use peer_status for details.';
