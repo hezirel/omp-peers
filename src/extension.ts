@@ -589,7 +589,7 @@ export default function peersExtension(pi: ExtensionHostLike): void {
   // best-effort only — `peer_send` (socket → far-end `sendUserMessage`) is the
   // guaranteed reply path in ALL modes.
   registerPeerSendTool(pi, {
-    send: (to, message, replyTo) => {
+    send: (to, message, replyTo, ack) => {
       const st = liveNode();
       return sendToPeer(to, message, {
         ownName: st?.name ?? '',
@@ -599,6 +599,7 @@ export default function peersExtension(pi: ExtensionHostLike): void {
         // name (post-/rename) can't route a send back to ourselves.
         listPeers: async () => (st?.peers ?? []).filter((p) => p.pid !== st?.pid),
         ...(replyTo !== undefined ? { replyTo } : {}),
+        ...(ack ? { ack: true } : {}),
         reap: (record) => {
           if (st !== undefined) void removePeerRecord(st.stateDir, record.pid);
         },

@@ -48,8 +48,9 @@ export function buildPeersNote(ownName, peers, mode, hidden = 0) {
     const how = mode === 'hub'
         ? '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. Native `hub` op=send is best-effort only. `peer_status` and `peer_request` are available agent tools.'
         : '`peer_send` to="<name>" delivers a real prompt there; reply arrives here as a peer message. `peer_status` and `peer_request` are available agent tools.';
+    const ackHint = 'Pure acks/receipts/closures ("received", "closed", confirmations) go as peer_send ack:true — a dim toast on the receiver, no wake, no reply. Never spend a model turn — yours or theirs — on an ack.';
     const naming = 'Names are session names (`/rename <name>`); valid 1-24 [a-zA-Z0-9_.-], else `<dir>-<pid>`. Auto-titles never qualify — `/rename` to claim an address.';
-    return [`<peers>`, `You are \`${ownName}\`. ${contact}`, what, how, naming, '', rows, hint, `</peers>`]
+    return [`<peers>`, `You are \`${ownName}\`. ${contact}`, what, how, ackHint, naming, '', rows, hint, `</peers>`]
         .filter((line) => line !== '')
         .join('\n');
 }
